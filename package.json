@@ -1,0 +1,68 @@
+{
+  "name": "runui",
+  "version": "0.0.1",
+  "description": "A shared development dashboard for your services",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "runui": "dist/cli.js",
+    "run-ui": "dist/cli.js",
+    "rui": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs/dashboard.png",
+    "docs/overview.png",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit && biome check .",
+    "check:fix": "tsc --noEmit && biome check --write .",
+    "test": "node test/smoke.mjs && node test/lifecycle.mjs",
+    "prepublishOnly": "npm run check:fix && npm run build && npm test",
+    "test:ui": "python3 test/ui.py",
+    "example:start": "bun run build && bun run --cwd example dev",
+    "test:example": "node test/example.mjs",
+    "check:example": "tsc --noEmit --project example/tsconfig.json"
+  },
+  "dependencies": {
+    "@opentui/core": "0.5.11",
+    "@opentui/react": "0.5.11",
+    "react": "19.2.3",
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16",
+    "@types/node": "^22.20.2",
+    "@types/react": "^19.3.0",
+    "typescript": "7.0.2"
+  },
+  "author": "James Waterhouse <09jwater@gmail.com>",
+  "repository": "https://github.com/Censkh/runui",
+  "homepage": "https://github.com/Censkh/runui#readme",
+  "keywords": [
+    "cli",
+    "terminal",
+    "tui",
+    "dashboard",
+    "development",
+    "services",
+    "process-manager",
+    "typescript",
+    "bun",
+    "node",
+    "deno"
+  ]
+}

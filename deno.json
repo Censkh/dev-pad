@@ -1,0 +1,7 @@
+{
+  "nodeModulesDir": "manual",
+  "tasks": {
+    "test": "deno run -A test/smoke.mjs && deno run -A test/lifecycle.mjs",
+    "dev": "deno run -A dist/cli.js"
+  }
+}

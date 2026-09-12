@@ -1,0 +1,10 @@
+{
+  "name": "runui-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun ../dist/cli.js",
+    "dev:node": "node ../dist/cli.js",
+    "dev:deno": "deno run -A ../dist/cli.js"
+  }
+}
