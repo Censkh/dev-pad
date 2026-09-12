@@ -7,7 +7,7 @@ import { type Config, runDashboard, validateConfig } from "./index.js";
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   console.log(
-    "runui / run-ui / rui [--config runui.config.ts] [--plain] [--check]\n\nKeys: 1–9 select service, then r start/restart, q stop, o open, Esc back.\nTop level: r restart active, c clear, Ctrl+C quit.\nCustom service actions are shown in the dashboard.",
+    "dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\n\nKeys: 1–9 select service, then r start/restart, q stop, o open, Esc back.\nTop level: r restart active, c clear, Ctrl+C quit.\nCustom service actions are shown in the dashboard.",
   );
 } else if (args.includes("--version")) {
   console.log("0.1.0");
@@ -19,8 +19,8 @@ if (args.includes("--help") || args.includes("-h")) {
     const file = resolve(
       configIndex >= 0
         ? args[configIndex + 1]
-        : (["runui.config.ts", "runui.config.mts", "runui.config.js", "runui.config.mjs"].find(existsSync) ??
-            "runui.config.ts"),
+        : (["dev-pad.config.ts", "dev-pad.config.mts", "dev-pad.config.js", "dev-pad.config.mjs"].find(existsSync) ??
+            "dev-pad.config.ts"),
     );
     if (!existsSync(file)) throw new Error(`No config found at ${file}`);
     let config: Config;
@@ -35,7 +35,7 @@ if (args.includes("--help") || args.includes("-h")) {
       console.log(`${config.title}: ${config.services.map((service) => service.id).join(", ")}`);
     else await runDashboard(config, { plain: args.includes("--plain") });
   } catch (error) {
-    console.error(`runui: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`dev-pad: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   }
 }

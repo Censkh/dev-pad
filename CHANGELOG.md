@@ -6,7 +6,7 @@ Initial release planned as **0.1.0**. No release has been published yet.
 
 ### Added
 
-- TypeScript service configuration and the `runui`, `run-ui`, and `rui` CLI aliases.
+- TypeScript service configuration and the `dev-pad`, `devpad`, and `dpad` CLI aliases.
 - Node, Bun, and Deno support, with an OpenTUI renderer on Bun and a portable terminal UI on Node and Deno.
 - Numbered service selection, scoped actions, and optional top-level service shortcuts.
 - Start/restart, stop, URL opening, live status, health probes, and dependency ordering.

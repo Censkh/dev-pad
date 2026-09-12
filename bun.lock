@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "runui",
+      "name": "dev-pad",
       "dependencies": {
         "@opentui/core": "0.5.11",
         "@opentui/react": "0.5.11",

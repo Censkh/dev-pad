@@ -1,13 +1,13 @@
 {
-  "name": "runui",
+  "name": "dev-pad",
   "version": "0.0.1",
   "description": "A shared development dashboard for your services",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "runui": "dist/cli.js",
-    "run-ui": "dist/cli.js",
-    "rui": "dist/cli.js"
+    "devpad": "dist/cli.js",
+    "dev-pad": "dist/cli.js",
+    "dpad": "dist/cli.js"
   },
   "exports": {
     ".": {
@@ -50,8 +50,8 @@
     "typescript": "7.0.2"
   },
   "author": "James Waterhouse <09jwater@gmail.com>",
-  "repository": "https://github.com/Censkh/runui",
-  "homepage": "https://github.com/Censkh/runui#readme",
+  "repository": "https://github.com/Censkh/dev-pad",
+  "homepage": "https://github.com/Censkh/dev-pad#readme",
   "keywords": [
     "cli",
     "terminal",

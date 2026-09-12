@@ -1,9 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "../dist/index.js";
 
-const port = Number(process.env.RUNUI_EXAMPLE_PORT ?? 4600);
+const port = Number(process.env.DEVPAD_EXAMPLE_PORT ?? 4600);
 if (!Number.isInteger(port) || port < 1024 || port > 65534) {
-  throw new Error("RUNUI_EXAMPLE_PORT must be an integer between 1024 and 65534");
+  throw new Error("DEVPAD_EXAMPLE_PORT must be an integer between 1024 and 65534");
 }
 const runtime = [
   process.execPath,
@@ -12,7 +12,7 @@ const runtime = [
 let site = "Ocean";
 
 export default defineConfig({
-  title: "runui example",
+  title: "dev-pad example",
   cwd: fileURLToPath(new URL(".", import.meta.url)),
   status: () => [{ label: "Site", value: site, tone: "info" }],
   services: [

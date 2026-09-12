@@ -24,8 +24,8 @@ for (let attempt = 0; attempt < 20; attempt++) {
   }
 }
 await Promise.all(reserved.map((server) => new Promise((resolve) => server.close(resolve))));
-process.env.RUNUI_EXAMPLE_PORT = String(port);
-const configURL = new URL("../example/runui.config.ts", import.meta.url).href;
+process.env.DEVPAD_EXAMPLE_PORT = String(port);
+const configURL = new URL("../example/dev-pad.config.ts", import.meta.url).href;
 const { default: config } =
   "Bun" in globalThis || "Deno" in globalThis
     ? await import(configURL)

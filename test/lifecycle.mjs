@@ -29,7 +29,7 @@ const parentCommand = (record, mode) => [
     printf '\\n'
     if [ "$mode" = live ]; then wait "$child"; fi
   `,
-  "runui-parent",
+  "dev-pad-parent",
   record,
   mode,
   ...command("descendant", record),
@@ -159,7 +159,7 @@ if (process.argv[2] === "descendant") {
     console.log("skip - POSIX process-group cleanup (Windows supports direct children only)");
   } else
     await test("restart and shutdown kill SIGTERM-resistant descendants after parent exit", async () => {
-      const directory = await mkdtemp(join(tmpdir(), "runui-lifecycle-"));
+      const directory = await mkdtemp(join(tmpdir(), "dev-pad-lifecycle-"));
       const records = [join(directory, "first.json"), join(directory, "second.json")];
       const dashboard = createDashboard({
         title: "process groups",

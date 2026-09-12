@@ -1,9 +1,9 @@
-# runui example
+# dev-pad example
 
 A self-contained project with a website, an API, and an optional worker. It uses
 local HTTP servers; no database, Docker, credentials, or external services are needed.
 
-From the runui repository root:
+From the dev-pad repository root:
 
 ```sh
 bun run example:start
@@ -31,15 +31,15 @@ Try these controls:
 5. Press `Esc` to return to the top level; `s` is available there too.
 6. Press `Ctrl+C` to quit and stop all running services.
 
-The API responds at `http://127.0.0.1:4601/health`. Set `RUNUI_EXAMPLE_PORT` to change
+The API responds at `http://127.0.0.1:4601/health`. Set `DEVPAD_EXAMPLE_PORT` to change
 the website port; the API uses that port plus one. For example:
 
 ```sh
-RUNUI_EXAMPLE_PORT=4700 bun run dev
+DEVPAD_EXAMPLE_PORT=4700 bun run dev
 ```
 
 The config imports the parent checkout’s built package from `../dist/index.js`.
-Rebuild runui after changing the library. In your own project, import from `runui`.
+Rebuild dev-pad after changing the library. In your own project, import from `dev-pad`.
 
 From the repository root, `bun run check:example` checks the example’s types and
 `npm run test:example` verifies its HTTP responses, site switching, worker, and cleanup.

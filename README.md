@@ -1,22 +1,28 @@
-# runui
+# dev-pad
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![npm: unreleased](https://img.shields.io/badge/npm-unreleased-lightgrey.svg)](https://www.npmjs.com/package/runui)
-[![CI](https://img.shields.io/github/actions/workflow/status/Censkh/runui/ci.yml?branch=master)](https://github.com/Censkh/runui/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/dev-pad.svg)](https://www.npmjs.com/package/dev-pad)
+[![CI](https://img.shields.io/github/actions/workflow/status/Censkh/dev-pad/ci.yml?branch=master)](https://github.com/Censkh/dev-pad/actions/workflows/ci.yml)
 
 One terminal for your local services. Start, restart, and stop processes; follow their
 logs; and add project-specific actions using a small TypeScript config.
 
-Works with **Node, Bun, and Deno**. The commands `runui`, `run-ui`, and `rui` are aliases.
+Works with **Node, Bun, and Deno**. The commands `dev-pad`, `devpad`, and `dpad` are aliases.
 
 ## Install and try it
 
-The first npm release is still pending. For now, install from the repository and
-launch the included example:
+Install in your project:
 
 ```sh
-git clone https://github.com/Censkh/runui.git
-cd runui
+npm install --save-dev dev-pad
+```
+
+Add a `dev-pad.config.ts` using the configuration below, then run `npx dev-pad`.
+To try the standalone example first:
+
+```sh
+git clone https://github.com/Censkh/dev-pad.git
+cd dev-pad
 bun install --frozen-lockfile
 bun run example:start
 ```
@@ -25,7 +31,7 @@ The [example project](example/README.md) starts a local website and API, with an
 optional background worker. No external services are needed. Press `1` then `s`
 to switch sites, or `3` then `r` to start the worker. `Ctrl+C` quits.
 
-![runui overview showing numbered services, live status, shared logs, and top-level actions](docs/overview.png)
+![dev-pad overview showing numbered services, live status, shared logs, and top-level actions](docs/overview.png)
 
 *Overview with an illustrative Expo configuration and a custom navy theme: running and optional services,
 shared logs, and top-level actions.*
@@ -35,17 +41,17 @@ shared logs, and top-level actions.*
 After stopping the example, link the built package into your project:
 
 ```sh
-# From the runui repository:
+# From the dev-pad repository:
 bun link
 cd ../your-project
-bun link runui
+bun link dev-pad
 ```
 
-In your project, create `runui.config.ts`. Replace the commands and ports below
+In your project, create `dev-pad.config.ts`. Replace the commands and ports below
 with your project's existing dev commands:
 
 ```ts
-import { defineConfig } from "runui";
+import { defineConfig } from "dev-pad";
 
 export default defineConfig({
   title: "My project",
@@ -69,15 +75,15 @@ export default defineConfig({
 });
 ```
 
-Run `runui`, or add `"dev": "runui"` to your project's package scripts.
-Use `runui --check` to validate the config without starting services.
+Run `dev-pad`, or add `"dev": "dev-pad"` to your project's package scripts.
+Use `dev-pad --check` to validate the config without starting services.
 
 The aliases use Node. To choose a runtime explicitly from your project directory:
 
 ```sh
-node ../runui/dist/cli.js
-bun ../runui/dist/cli.js
-deno run -A ../runui/dist/cli.js
+node ../dev-pad/dist/cli.js
+bun ../dev-pad/dist/cli.js
+deno run -A ../dev-pad/dist/cli.js
 ```
 
 Service commands are independent of the dashboard runtime: a Node dashboard can
@@ -120,7 +126,7 @@ service is selected. For example, these Expo actions appear at the top level
 and when Expo is selected:
 
 ```ts
-import { defineConfig, type ServiceContext } from "runui";
+import { defineConfig, type ServiceContext } from "dev-pad";
 
 async function launch(ctx: ServiceContext, platform: "ios" | "android") {
   ctx.service("mobile").command = ["bun", "run", "expo", `run:${platform}`];
@@ -193,10 +199,10 @@ checks accept responses below 500 and time out after 900 ms.
 For Docker or other external resources, use `start` and `stop` hooks with
 `ctx.run(...)`. Define cleanup explicitly: stopping a Docker CLI process alone
 does not stop its containers. Shutdown stops dependents before dependencies.
-On POSIX, runui terminates managed process groups and escalates to SIGKILL after
+On POSIX, dev-pad terminates managed process groups and escalates to SIGKILL after
 2.5 seconds. Windows currently terminates direct children only.
 
-If a port is occupied on POSIX, runui uses `lsof` to reclaim a listener only when
+If a port is occupied on POSIX, dev-pad uses `lsof` to reclaim a listener only when
 its working directory belongs to this project. Other occupied ports fail startup.
 
 ### Action context
@@ -233,7 +239,7 @@ The Deno command uses `-A` for subprocess, environment, file, and network access
 | `--plain` | Print prefixed logs without the interactive UI |
 | `--help` / `--version` | Print usage or version |
 
-The CLI searches for `runui.config.ts`, `.mts`, `.js`, then `.mjs` in the current
+The CLI searches for `dev-pad.config.ts`, `.mts`, `.js`, then `.mjs` in the current
 directory. Configs execute code when imported, including with `--check`.
 Redirected input or output automatically selects plain logging. Logs retain the
 latest 500 entries and collapse repeated carriage-return spinner frames.

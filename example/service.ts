@@ -18,7 +18,7 @@ if (mode === "worker") {
       response.setHeader("Content-Type", "text/html; charset=utf-8");
       response.end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>${site} site</title>
         <style>body{font:20px system-ui;max-width:40rem;margin:15vh auto;padding:2rem;background:#11111a;color:#f4f4f5}h1{color:#67e8f9}code{color:#fbbf24}</style>
-        <h1>${site} site</h1><p>Served by the runui example.</p>
+        <h1>${site} site</h1><p>Served by the dev-pad example.</p>
         <p>In the dashboard, press <code>1</code> then <code>s</code> to switch sites.</p></html>`);
     }
   });

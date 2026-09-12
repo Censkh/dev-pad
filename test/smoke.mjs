@@ -475,10 +475,10 @@ if (process.argv[2] === "grandchild") {
     assert.equal(started, false);
   });
   await test("CLI --check loads a plain TypeScript .mts config without starting services", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "runui-cli-"));
+    const directory = await mkdtemp(join(tmpdir(), "dev-pad-cli-"));
     const config = join(directory, "config.mts");
     const started = join(directory, "started");
-    const secret = "RUNUI_TEST_ONLY_SECRET_DO_NOT_EMIT";
+    const secret = "DEVPAD_TEST_ONLY_SECRET_DO_NOT_EMIT";
     const dashboard = createDashboard({ title: "CLI", services: [service("idle")] });
     try {
       await writeFile(

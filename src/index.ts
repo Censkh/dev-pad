@@ -63,7 +63,7 @@ export function defineConfig(config: Config): Config {
 
 export function validateConfig(config: Config) {
   if (!config || typeof config.title !== "string" || !Array.isArray(config.services) || !config.services.length)
-    throw new Error("runui config needs a title and at least one service");
+    throw new Error("dev-pad config needs a title and at least one service");
   const ids = new Set<string>();
   for (const service of config.services) {
     if (!service.id || ids.has(service.id)) throw new Error(`Duplicate or empty service id: ${service.id}`);
