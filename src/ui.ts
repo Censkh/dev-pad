@@ -117,10 +117,11 @@ export async function mountUI(
     for (const [index, service] of snapshot.services.entries()) {
       const appearance = statusAppearance(service.status);
       details.push([
-        ` ${snapshot.selectedId === service.id ? ">" : ""}${index + 1}. ${appearance.marker} ${service.name}  ${service.status}  ${service.url}`,
+        ` ${`${snapshot.selectedId === service.id ? ">" : ""}${index + 1}.`.padEnd(4)}${appearance.marker}  ${service.name}  ${service.status}  ${service.url}`,
         appearance.tone,
       ]);
-      for (const item of service.items ?? []) details.push([`   ${item.label}: ${item.value}`, item.tone ?? "muted"]);
+      for (const item of service.items ?? [])
+        details.push([`        ${item.label}: ${item.value}`, item.tone ?? "muted"]);
     }
     for (const item of snapshot.items) details.push([` ${item.label}: ${item.value}`, item.tone ?? "info"]);
     const budget = Math.max(0, height - 7);

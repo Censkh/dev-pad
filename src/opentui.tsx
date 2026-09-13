@@ -166,7 +166,11 @@ export async function mountUI(
                     </text>
                   )}
                 </box>
-                {service.items?.map(itemLine)}
+                {!!service.items?.length && (
+                  <box flexDirection="column" paddingLeft={7} flexShrink={0}>
+                    {service.items.map(itemLine)}
+                  </box>
+                )}
               </box>
             );
           })}
@@ -229,14 +233,14 @@ export async function mountUI(
           </text>
         )}
         <box
-          height={2}
+          height={3}
           flexShrink={0}
-          border={["top"]}
-          borderStyle="single"
+          border
+          borderStyle="rounded"
           borderColor={colors.border}
           backgroundColor={colors.panel}
           paddingX={1}
-          alignItems="flex-start"
+          alignItems="center"
         >
           <text truncate>
             {(snapshot.selectedId
