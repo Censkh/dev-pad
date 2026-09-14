@@ -1,6 +1,6 @@
 {
   "name": "dev-pad",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "A shared development dashboard for your services",
   "type": "module",
   "license": "MIT",
