@@ -11,7 +11,7 @@ export function logStream(emit: (message: string) => void) {
     const message = stripVTControlCharacters(line).trimEnd();
     const normalized = message.replace(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*/, "");
     if (message && normalized !== lastProgress) emit(message);
-    lastProgress = progress ? normalized : "";
+    lastProgress = progress ? normalized || lastProgress : "";
     line = "";
   };
   return {
@@ -24,7 +24,17 @@ export function logStream(emit: (message: string) => void) {
         }
         if (char === "\r") carriage = true;
         else if (char === "\n") flush(false);
-        else line += char;
+        else {
+          line += char;
+          // Spinners also redraw with cursor-to-column-one and erase-line sequences.
+          const redraw =
+            (char === "G" || char === "K") &&
+            ["\x1b[G", "\x1b[0G", "\x1b[1G", "\x1b[2K"].find((sequence) => line.endsWith(sequence));
+          if (redraw) {
+            line = line.slice(0, -redraw.length);
+            flush(true);
+          }
+        }
       }
     },
     end() {

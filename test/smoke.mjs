@@ -8,6 +8,7 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { createDashboard, portListening } from "../dist/index.js";
+import { logStream } from "../dist/logs.js";
 
 const self = fileURLToPath(import.meta.url);
 const runtime = [process.execPath, ...("Deno" in globalThis ? ["run", "-A"] : [])];
@@ -59,6 +60,45 @@ if (process.argv[2] === "grandchild") {
     }
   };
   const service = (id, extra = {}) => ({ id, name: id, start: async () => {}, ...extra });
+
+  await test("spinner redraws stay separate across ANSI sequences and chunk boundaries", async () => {
+    for (const redraw of ["\r", "\x1b[1G\x1b[2K", "\x1b[2K\x1b[1G", "\x1b[G\x1b[K"]) {
+      const output = `${[..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"]
+        .map((frame) => `${redraw}\x1b[36m${frame}\x1b[0m Installing CocoaPods...`)
+        .join("")}${redraw}✔ Installed CocoaPods\r\nordinary log\nordinary log\nfinal fragment`;
+      for (const size of [1, 7, output.length]) {
+        const messages = [];
+        const stream = logStream((message) => messages.push(message));
+        for (let offset = 0; offset < output.length; offset += size) stream.write(output.slice(offset, offset + size));
+        stream.end();
+        assert.deepEqual(
+          messages,
+          ["⠋ Installing CocoaPods...", "✔ Installed CocoaPods", "ordinary log", "ordinary log", "final fragment"],
+          `redraw=${JSON.stringify(redraw)}, chunk size=${size}`,
+        );
+      }
+    }
+  });
+
+  await test("interleaved services and stderr keep independent spinner state", async () => {
+    const spinner = "⠋ Installing CocoaPods...\x1b[1G\x1b[2K⠙ Installing CocoaPods...\x1b[1G\x1b[2Kdone\n";
+    const inputs = [spinner, spinner, "server started\nrequest received\nfinal fragment"];
+    const messages = [];
+    const streams = inputs.map((_, source) => logStream((message) => messages.push({ source, message })));
+    // Interleave even inside text and ANSI sequences, as separate subprocess chunks can arrive.
+    for (let offset = 0; offset < Math.max(...inputs.map((input) => input.length)); offset++) {
+      for (const [source, input] of inputs.entries()) {
+        if (offset < input.length) streams[source].write(input[offset]);
+      }
+    }
+    for (const stream of streams) stream.end();
+    for (const source of [0, 1, 2]) {
+      assert.deepEqual(
+        messages.filter((entry) => entry.source === source).map((entry) => entry.message),
+        source === 2 ? ["server started", "request received", "final fragment"] : ["⠋ Installing CocoaPods...", "done"],
+      );
+    }
+  });
 
   await test("real subprocess logs, stdin, restart and process-group shutdown", async () => {
     const dashboard = createDashboard({
