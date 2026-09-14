@@ -489,6 +489,8 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
 export async function runDashboard(config: Config, options: { plain?: boolean } = {}) {
   const interactive = !options.plain && Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const dashboard = createDashboard(config, { plain: !interactive });
+  process.title = config.title;
+  if (process.stdout.isTTY) process.stdout.write(`\x1b]0;${config.title.replace(/\p{Cc}/gu, "")}\x07`);
   let unmount: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let resolveDone: () => void = () => {};
