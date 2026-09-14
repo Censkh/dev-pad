@@ -145,7 +145,7 @@ export async function mountUI(
     line(` ${"─".repeat(Math.max(0, width - 1))}`, "muted");
     const actions = snapshot.actions.map(({ key, label }) => `${key} ${label}`);
     line(
-      ` ${(snapshot.selectedId ? [...actions, "Esc back", "1–9 select"] : ["Ctrl+C quit", "c clear", ...actions, "↑↓ logs", ...(snapshot.services.length ? ["1–9 select"] : [])]).join(" · ")}`,
+      ` ${(snapshot.selectedId ? [...actions, "Esc back", "1–9 select"] : [`${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit`, "c clear", ...actions, "↑↓ logs", ...(snapshot.services.length ? ["1–9 select"] : [])]).join(" · ")}`,
       "warning",
     );
     const frame = lines.slice(0, height).join("\r\n");

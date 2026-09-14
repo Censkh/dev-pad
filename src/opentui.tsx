@@ -246,7 +246,7 @@ export async function mountUI(
             {(snapshot.selectedId
               ? [...snapshot.actions, { key: "Esc", label: "back" }, { key: "1–9", label: "select" }]
               : [
-                  { key: "Ctrl+C", label: "quit" },
+                  { key: process.platform === "darwin" ? "Cmd+C" : "Ctrl+C", label: "quit" },
                   { key: "c", label: "clear" },
                   ...snapshot.actions,
                   ...(snapshot.services.length ? [{ key: "1–9", label: "select" }] : []),

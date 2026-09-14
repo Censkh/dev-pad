@@ -7,7 +7,7 @@ import { type Config, runDashboard, validateConfig } from "./index.js";
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   console.log(
-    "dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\n\nKeys: 1–9 select service, then r start/restart, q stop, o open, Esc back.\nTop level: r restart active, c clear, Ctrl+C quit.\nCustom service actions are shown in the dashboard.",
+    `dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\n\nKeys: 1–9 select service, then r start/restart, q stop, o open, Esc back.\nTop level: r restart active, c clear, ${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit.\nCustom service actions are shown in the dashboard.`,
   );
 } else if (args.includes("--version")) {
   console.log("0.1.0");
