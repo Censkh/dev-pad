@@ -33,6 +33,7 @@ export type Service = {
   start?: (ctx: ServiceContext) => Promise<void>;
   stop?: (ctx: ServiceContext) => Promise<void>;
   status?: () => StatusItem[];
+  tick?: (ctx: ServiceContext) => Promise<void>;
 };
 export type Config = {
   title: string;
@@ -433,6 +434,7 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
       if (closing || actionTask || healthTask) return healthTask ?? Promise.resolve();
       healthTask = (async () => {
         await config.tick?.(ctx);
+        await Promise.all(services.map((service) => service.tick?.(ctx)));
         await Promise.all(
           services.map(async (service) => {
             const s = state(service.id);

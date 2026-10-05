@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add `dev-pad/expo`, an Expo service helper with iOS/Android launch actions and Android `adb reverse` port forwarding.
+- Add a per-service `tick(ctx)` hook for periodic work.
+- Build `dist` in `prepare`, so Git and workspace installs work without a separate build.
+
 ## 0.2.1
 
 - Press a selected service’s number again to deselect it and return to the dashboard’s global actions.

@@ -13,6 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./expo": {
+      "types": "./dist/expo.d.ts",
+      "default": "./dist/expo.js"
     }
   },
   "files": [
@@ -28,9 +32,10 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "tsc",
     "check": "tsc --noEmit && biome check .",
     "check:fix": "tsc --noEmit && biome check --write .",
-    "test": "node --test test/smoke.mjs test/lifecycle.mjs",
+    "test": "node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs",
     "test:package-managers": "node --test test/package-managers.mjs",
     "prepublishOnly": "npm run check:fix && npm run build && npm test",
     "test:ui": "python3 test/ui.py",

@@ -166,6 +166,41 @@ Use `config.tick(ctx)` for periodic asynchronous work rather than doing I/O in
 `status()`. For site switching, an action can update shared state, while `url`,
 `env`, and `status` functions read it on demand.
 
+## Expo
+
+`dev-pad/expo` builds an Expo service with global `i` (iOS) and `a` (Android) actions.
+When Metro is running under Bun's PTY, the actions send Metro's own `i`/`a` shortcut.
+Otherwise they restart the service with a launch command, which defaults to `command`
+plus `--ios` or `--android`.
+
+```ts
+import { defineConfig } from "dev-pad";
+import { expo } from "dev-pad/expo";
+
+export default defineConfig({
+  title: "My mobile project",
+  services: [
+    expo({
+      cwd: "packages/app",
+      // Build the native app instead of opening an installed dev client.
+      launch: (platform) => ["bun", "run", "expo", `run:${platform}`],
+      // Also expose the API to Android devices.
+      androidPorts: [5101],
+      autostart: false,
+    }),
+  ],
+});
+```
+
+Defaults: `id` is `mobile`, `name` is `Expo`, `command` is `bun run dev`, `port` is
+8081, `url` is Metro's address, and `terminal` is enabled. Other service options pass
+through, and your `actions`, `status`, and `tick` are kept alongside the Expo ones.
+
+After the first Android launch, each health check runs `adb reverse` for Metro's port
+and `androidPorts` on every connected device, so devices that reconnect keep working.
+adb is found through `ANDROID_HOME`, `ANDROID_SDK_ROOT`, the default SDK location, then
+the PATH; set `adb` to override it.
+
 ## Configuration reference
 
 Each service needs a unique `id`, a `name`, and a `command` or `start` hook.
@@ -185,6 +220,7 @@ Commands are argument arrays and do not run through a shell automatically.
 | `start(ctx)` | Async setup before launching `command`, or a custom lifecycle without a command |
 | `stop(ctx)` | Async cleanup after terminating the process |
 | `actions` / `status()` | Custom keyboard actions and live status items |
+| `tick(ctx)` | Periodic asynchronous work, run on each health check whether or not the service is running |
 | `allowOccupiedPort` | Skip the startup port conflict check, e.g. for an existing Docker service |
 
 The CLI defaults the project directory to the config's directory; `config.cwd`
