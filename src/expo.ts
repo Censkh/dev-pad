@@ -5,7 +5,7 @@ import type { Service, ServiceContext } from "./index.js";
 
 export type ExpoPlatform = "ios" | "android";
 export type ExpoOptions = Partial<Service> & {
-  /** Command used when Metro is not running or cannot take key input. Defaults to `command` plus `--ios`/`--android`. */
+  /** Command used when Metro is not running or cannot take key input. Defaults to `bun run expo run:<platform> --port <port>`. */
   launch?: (platform: ExpoPlatform) => string[];
   /** Host ports to expose to Android devices with `adb reverse`, in addition to Metro's port. */
   androidPorts?: number[];
@@ -70,7 +70,7 @@ export function expo(options: ExpoOptions = {}): Service {
       return;
     const service = ctx.service(id);
     service.name = `${name} ${platformNames[platform]}`;
-    service.command = launchCommand?.(platform) ?? [...command, `--${platform}`];
+    service.command = launchCommand?.(platform) ?? ["bun", "run", "expo", `run:${platform}`, "--port", String(port)];
     await ctx.restart(id);
   };
 

@@ -170,8 +170,9 @@ Use `config.tick(ctx)` for periodic asynchronous work rather than doing I/O in
 
 `dev-pad/expo` builds an Expo service with global `i` (iOS) and `a` (Android) actions.
 When Metro is running under Bun's PTY, the actions send Metro's own `i`/`a` shortcut.
-Otherwise they restart the service with a launch command, which defaults to `command`
-plus `--ios` or `--android`.
+Otherwise they build and launch the native app with `bun run expo run:ios` or
+`bun run expo run:android`, passing the configured Metro port. Set `launch` to
+override the build command.
 
 ```ts
 import { defineConfig } from "dev-pad";
@@ -182,8 +183,6 @@ export default defineConfig({
   services: [
     expo({
       cwd: "packages/app",
-      // Build the native app instead of opening an installed dev client.
-      launch: (platform) => ["bun", "run", "expo", `run:${platform}`],
       // Also expose the API to Android devices.
       androidPorts: [5101],
       autostart: false,

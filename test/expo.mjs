@@ -82,6 +82,24 @@ if (process.argv[2] === "metro") {
     assert.deepEqual(service.status(), [{ label: "Extra", value: "yes" }]);
   });
 
+  test("default launch builds each platform using the configured Metro port", async () => {
+    for (const port of [8081, 7110]) {
+      for (const platform of ["ios", "android"]) {
+        const service = expo({ port });
+        const restarted = [];
+        await service.actions
+          .find((action) => action.key === (platform === "ios" ? "i" : "a"))
+          .run({
+            write: () => false,
+            service: () => service,
+            restart: async (id) => restarted.push(id),
+          });
+        assert.deepEqual(service.command, ["bun", "run", "expo", `run:${platform}`, "--port", String(port)]);
+        assert.deepEqual(restarted, ["mobile"]);
+      }
+    }
+  });
+
   test("launching without Metro restarts with the platform command", async () => {
     const port = await freePort();
     const dashboard = createDashboard({
@@ -128,14 +146,21 @@ if (process.argv[2] === "metro") {
         ].join("\n"),
       );
       await chmod(adb, 0o755);
-      const service = expo({ command: command("metro"), port, androidPorts: [5101], autostart: false, adb });
+      const service = expo({
+        command: command("metro"),
+        launch: (platform) => command("metro", `run:${platform}`),
+        port,
+        androidPorts: [5101],
+        autostart: false,
+        adb,
+      });
       const dashboard = createDashboard({ title: "expo", services: [service] });
       const items = () => dashboard.snapshot().services[0].items;
       try {
         await dashboard.health();
         await assert.rejects(readFile(record, "utf8"), { code: "ENOENT" });
         await dashboard.key("a");
-        await waitFor(() => dashboard.snapshot().logs.some((log) => log.message === "metro --android"), "Android");
+        await waitFor(() => dashboard.snapshot().logs.some((log) => log.message === "metro run:android"), "Android");
         assert.equal(dashboard.snapshot().services[0].name, "Expo Android");
         await dashboard.health();
         assert.deepEqual((await readFile(record, "utf8")).trim().split("\n"), [
