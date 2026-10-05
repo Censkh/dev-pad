@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { createDashboard, portListening } from "../dist/index.js";
@@ -58,17 +59,7 @@ if (process.argv[2] === "descendant") {
 } else if (process.argv[2] === "exit") {
   process.exitCode = Number(process.argv[3]);
 } else {
-  const test = async (name, run) => {
-    try {
-      await run();
-      console.log(`ok - ${name}`);
-    } catch (error) {
-      process.exitCode = 1;
-      console.error(`not ok - ${name}\n`, error);
-    }
-  };
-
-  await test("stop during a pending start waits and cleans the resource exactly once", async () => {
+  test("stop during a pending start waits and cleans the resource exactly once", async () => {
     let release;
     const gate = new Promise((resolve) => {
       release = resolve;
@@ -112,7 +103,7 @@ if (process.argv[2] === "descendant") {
     }
   });
 
-  await test("child exit preserves hook cleanup for restart and shutdown", async () => {
+  test("child exit preserves hook cleanup for restart and shutdown", async () => {
     for (const code of [0, 7]) {
       let server = createServer();
       let port;
@@ -158,7 +149,7 @@ if (process.argv[2] === "descendant") {
   if (process.platform === "win32") {
     console.log("skip - POSIX process-group cleanup (Windows supports direct children only)");
   } else
-    await test("restart and shutdown kill SIGTERM-resistant descendants after parent exit", async () => {
+    test("restart and shutdown kill SIGTERM-resistant descendants after parent exit", async () => {
       const directory = await mkdtemp(join(tmpdir(), "dev-pad-lifecycle-"));
       const records = [join(directory, "first.json"), join(directory, "second.json")];
       const dashboard = createDashboard({

@@ -47,8 +47,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - run: node test/smoke.mjs
-      - run: node test/lifecycle.mjs
+      - run: node --test test/smoke.mjs test/lifecycle.mjs
       - run: node test/example.mjs
       - run: python3 test/ui.py node
 
@@ -70,10 +69,36 @@ jobs:
         with:
           name: dist
           path: dist
-      - run: bun test/smoke.mjs
-      - run: bun test/lifecycle.mjs
+      - run: bun test --timeout 10000 test/smoke.test.mjs test/lifecycle.test.mjs
       - run: bun test/example.mjs
       - run: python3 test/ui.py bun
+
+  test-package-managers:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package-manager: [bun, npm, pnpm, yarn]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm install --global yarn@1.22.22
+        if: matrix.package-manager == 'yarn'
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - run: bun run test:package-managers
+        env:
+          PACKAGE_MANAGER: ${{ matrix.package-manager }}
 
   test-deno:
     needs: build
@@ -96,7 +121,6 @@ jobs:
         with:
           name: dist
           path: dist
-      - run: deno run -A test/smoke.mjs
-      - run: deno run -A test/lifecycle.mjs
+      - run: deno test -A test/smoke.mjs test/lifecycle.mjs
       - run: deno run -A test/example.mjs
       - run: python3 test/ui.py deno

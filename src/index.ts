@@ -423,7 +423,7 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
       }
       if (/^[1-9]$/.test(key)) {
         const service = services[Number(key) - 1];
-        if (service) selectedId = service.id;
+        if (service) selectedId = selectedId === service.id ? undefined : service.id;
         return;
       }
       const action = availableActions().find((action) => action.key === key);

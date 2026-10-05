@@ -1,6 +1,6 @@
 {
   "name": "dev-pad",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A shared development dashboard for your services",
   "type": "module",
   "license": "MIT",
@@ -30,7 +30,8 @@
     "build": "tsc",
     "check": "tsc --noEmit && biome check .",
     "check:fix": "tsc --noEmit && biome check --write .",
-    "test": "node test/smoke.mjs && node test/lifecycle.mjs",
+    "test": "node --test test/smoke.mjs test/lifecycle.mjs",
+    "test:package-managers": "node --test test/package-managers.mjs",
     "prepublishOnly": "npm run check:fix && npm run build && npm test",
     "test:ui": "python3 test/ui.py",
     "example:start": "bun run build && bun run --cwd example dev",
@@ -40,13 +41,16 @@
   "dependencies": {
     "@opentui/core": "0.5.11",
     "@opentui/react": "0.5.11",
-    "react": "19.2.3",
     "tsx": "^4.20.5"
+  },
+  "peerDependencies": {
+    "react": ">=19.2.0 <20"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
     "@types/node": "^22.20.2",
     "@types/react": "^19.3.0",
+    "react": "19.3.0",
     "typescript": "7.0.2"
   },
   "author": "James Waterhouse <09jwater@gmail.com>",

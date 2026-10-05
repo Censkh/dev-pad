@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { createDashboard, portListening } from "../dist/index.js";
@@ -50,18 +51,9 @@ if (process.argv[2] === "grandchild") {
       await delay(20);
     }
   };
-  const test = async (name, run) => {
-    try {
-      await run();
-      console.log(`ok - ${name}`);
-    } catch (error) {
-      process.exitCode = 1;
-      console.error(`not ok - ${name}\n`, error);
-    }
-  };
   const service = (id, extra = {}) => ({ id, name: id, start: async () => {}, ...extra });
 
-  await test("spinner redraws stay separate across ANSI sequences and chunk boundaries", async () => {
+  test("spinner redraws stay separate across ANSI sequences and chunk boundaries", async () => {
     for (const redraw of ["\r", "\x1b[1G\x1b[2K", "\x1b[2K\x1b[1G", "\x1b[G\x1b[K"]) {
       const output = `${[..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"]
         .map((frame) => `${redraw}\x1b[36m${frame}\x1b[0m Installing CocoaPods...`)
@@ -80,7 +72,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("interleaved services and stderr keep independent spinner state", async () => {
+  test("interleaved services and stderr keep independent spinner state", async () => {
     const spinner = "⠋ Installing CocoaPods...\x1b[1G\x1b[2K⠙ Installing CocoaPods...\x1b[1G\x1b[2Kdone\n";
     const inputs = [spinner, spinner, "server started\nrequest received\nfinal fragment"];
     const messages = [];
@@ -100,7 +92,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("real subprocess logs, stdin, restart and process-group shutdown", async () => {
+  test("real subprocess logs, stdin, restart and process-group shutdown", async () => {
     const dashboard = createDashboard({
       title: "processes",
       services: [{ id: "svc", name: "Service", command: command("service") }],
@@ -157,7 +149,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("utility exit fragments and failed exit propagation", async () => {
+  test("utility exit fragments and failed exit propagation", async () => {
     const dashboard = createDashboard({ title: "utilities", services: [service("idle")] });
     try {
       assert.equal(await dashboard.ctx.run(command("utility"), { source: "task" }), "utility fragment");
@@ -179,7 +171,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("shutdown during a start-hook utility cleans its process group", async () => {
+  test("shutdown during a start-hook utility cleans its process group", async () => {
     let stopped = false;
     let descendant;
     const dashboard = createDashboard({
@@ -232,7 +224,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("HTTP health transitions and custom probes", async () => {
+  test("HTTP health transitions and custom probes", async () => {
     let code = 200;
     let healthy = false;
     const server = createServer((_req, res) => {
@@ -266,7 +258,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("custom lifecycle, actions, live header/row status and dependency shutdown", async () => {
+  test("custom lifecycle, actions, live header/row status and dependency shutdown", async () => {
     const events = [];
     let value = "before";
     let release;
@@ -342,7 +334,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("restart-all stops dependents before dependencies", async () => {
+  test("restart-all stops dependents before dependencies", async () => {
     const events = [];
     const lifecycle = (id, extra) =>
       service(id, {
@@ -368,7 +360,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("numbers select without running; actions target only the selected service", async () => {
+  test("numbers toggle selection without running; actions target only the selected service", async () => {
     const events = [];
     const dashboard = createDashboard({
       title: "selection",
@@ -392,6 +384,14 @@ if (process.argv[2] === "grandchild") {
       assert.deepEqual(events, []);
       assert.equal(dashboard.snapshot().selectedId, "one");
       assert.equal(dashboard.snapshot().services[0].status, "not started");
+      await dashboard.key("1");
+      assert.equal(dashboard.snapshot().selectedId, undefined);
+      assert.ok(dashboard.snapshot().actions.some((action) => action.label === "global"));
+      assert.deepEqual(events, []);
+      await dashboard.key("1");
+      assert.equal(dashboard.snapshot().selectedId, "one");
+      await dashboard.key("9");
+      assert.equal(dashboard.snapshot().selectedId, "one");
       await dashboard.key("r");
       await dashboard.key("2");
       assert.deepEqual(events, ["start one"]);
@@ -413,7 +413,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("open is available only for a selected service with a URL", async () => {
+  test("open is available only for a selected service with a URL", async () => {
     const dashboard = createDashboard({
       title: "open",
       services: [
@@ -435,7 +435,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("global service actions apply only at the top level and to their owning service", async () => {
+  test("global service actions apply only at the top level and to their owning service", async () => {
     let launches = 0;
     const dashboard = createDashboard({
       title: "global actions",
@@ -472,7 +472,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("invalid configuration rejects before startup", async () => {
+  test("invalid configuration rejects before startup", async () => {
     let started = false;
     const valid = service("a", {
       start: async () => {
@@ -514,7 +514,7 @@ if (process.argv[2] === "grandchild") {
       assert.throws(() => createDashboard(config), pattern);
     assert.equal(started, false);
   });
-  await test("CLI --check loads a plain TypeScript .mts config without starting services", async () => {
+  test("CLI --check loads a plain TypeScript .mts config without starting services", async () => {
     const directory = await mkdtemp(join(tmpdir(), "dev-pad-cli-"));
     const config = join(directory, "config.mts");
     const started = join(directory, "started");
@@ -570,7 +570,7 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
-  await test("missing executable can be retried and recovered", async () => {
+  test("missing executable can be retried and recovered", async () => {
     const dashboard = createDashboard({
       title: "retry",
       services: [
