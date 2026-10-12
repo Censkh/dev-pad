@@ -51,6 +51,7 @@ export async function mountUI(
     const compact = width < 68;
     const small = height < 20;
     const logs = snapshot.logs.slice(-500);
+    const selectedName = cleanText(snapshot.services.find((service) => service.id === snapshot.selectedId)?.name ?? "");
     useEffect(() => {
       const timer = setInterval(() => setSnapshot({ ...getSnapshot() }), 100);
       return () => clearInterval(timer);
@@ -115,13 +116,7 @@ export async function mountUI(
         <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
           <text fg={colors.primary} flexGrow={1} minWidth={0} truncate>
             <strong>{cleanText(snapshot.title)}</strong>
-            {snapshot.selectedId && (
-              <span>
-                {" "}
-                · Selected:{" "}
-                {cleanText(snapshot.services.find((service) => service.id === snapshot.selectedId)?.name ?? "")}
-              </span>
-            )}
+            {snapshot.selectedId && <span> · Selected: {selectedName}</span>}
           </text>
           {!compact && (
             <text fg={colors.muted}>
@@ -177,7 +172,8 @@ export async function mountUI(
           {snapshot.items.map(itemLine)}
         </scrollbox>
         <scrollbox
-          title={` Recent logs · ${logs.length}/500 `}
+          key={snapshot.selectedId ?? "all"}
+          title={selectedName ? ` ${selectedName} logs · ${logs.length} ` : ` Recent logs · ${logs.length}/500 `}
           titleColor={colors.primary}
           border
           borderStyle="rounded"
@@ -224,7 +220,7 @@ export async function mountUI(
               </text>
             ))
           ) : (
-            <text fg={colors.muted}>Waiting for service output…</text>
+            <text fg={colors.muted}>Waiting for {selectedName || "service"} output…</text>
           )}
         </scrollbox>
         {snapshot.actionLabel && (

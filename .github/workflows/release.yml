@@ -1,0 +1,104 @@
+name: Publish dev-pad
+
+# Runs after CI passes, so only commits that cleared the full test matrix are published.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+jobs:
+  stable:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-pad-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NPM_CONFIG_PROVENANCE: "true"
+      RELEASE_BRANCH: master
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Version, commit, and publish
+        run: |
+          if [[ "$(git log -1 --format=%s)" == 'chore(release): '* ]]; then
+            # The run that pushed this commit normally published it already; only retry a failed publish.
+            version=$(node -p 'require("./package.json").version')
+            if [[ -n "$(npm view "dev-pad@$version" version 2>/dev/null)" ]]; then
+              echo "dev-pad@$version is already published"
+              exit 0
+            fi
+            bun run release
+            git push origin --tags
+            exit 0
+          fi
+          node scripts/ensure-master-changeset.mjs
+          bun run version-packages
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- package.json bun.lock CHANGELOG.md .changeset
+          git commit -m "chore(release): $(node -p 'require("./package.json").version')"
+          git push origin HEAD:master
+          bun run release
+          git push origin --tags
+
+  branch:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'master' && !startsWith(github.event.workflow_run.head_branch, 'changeset-release/')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-pad-branch-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NPM_CONFIG_PROVENANCE: "true"
+      RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - id: version
+        run: node scripts/prepare-branch-release.mjs
+      - run: npm publish --tag "${{ steps.version.outputs.tag }}"
+      - name: Post or update the branch package comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          pr_number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')
+          if [[ -z "$pr_number" ]]; then
+            exit 0
+          fi
+          marker='<!-- dev-pad-branch-tag -->'
+          body=$(printf '%s\n\n### 📦 Try this branch\n\n`npm install dev-pad@%s`\n\nThis tag follows the latest successful publish from `%s`. Pin an exact version for a fixed build.' "$marker" "$TAG" "$RELEASE_BRANCH")
+          comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- dev-pad-branch-tag -->"))) | .id')
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" -f body="$body" >/dev/null
+          fi

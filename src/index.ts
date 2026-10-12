@@ -401,7 +401,8 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
         url: url(service),
         items: service.status?.() ?? [],
       })),
-      logs: [...logs],
+      // A selected service narrows the log panel to that service's own output.
+      logs: selectedId ? logs.filter((entry) => entry.source === selectedId) : [...logs],
       items: config.status?.() ?? [],
       actions: availableActions().map(({ key, label }) => ({ key, label })),
       actionLabel,

@@ -109,8 +109,9 @@ The highlighted row and action bar show which service you are controlling.
 | `c` | Clear logs | Clear logs |
 | `↑` / `↓` | Scroll logs | Scroll logs |
 
-While a service is selected, the action bar shows **its actions**, **Esc** to clear
-the selection, and **1–9** to select another service. Global log and quit shortcuts
+While a service is selected, the log panel shows only that service's output and
+the action bar shows **its actions**, **Esc** to clear the selection, and **1–9**
+to select another service. Global log and quit shortcuts
 still work, but their hints are hidden. Selection
 remains after an action. Windows also supports the Ctrl+Break signal for quitting.
 With Bun, drag to select and copy log text.
@@ -303,5 +304,11 @@ The terminal tests require Python 3 on POSIX, plus the runtimes under test. Run
 `python3 test/ui.py bun` (or `node` / `deno`) to test one renderer.
 GitHub CI checks and builds once, then tests Node 22/24/26, Bun 1.3/latest, and
 Deno 2.1.5/latest, including keyboard input, rendering, and process cleanup.
+
+Releases are automated with [Changesets](https://github.com/changesets/changesets).
+Add one with `bunx changeset add` when a change should be a minor or major
+release; otherwise every push to `master` publishes a patch. Branch pushes publish
+prerelease builds under a branch dist-tag (`npm install dev-pad@<branch>`). See
+[.changeset/README.md](.changeset/README.md).
 
 [Changelog](CHANGELOG.md) · [MIT license](LICENSE).

@@ -158,7 +158,9 @@ const dispose = await mountUI(() => snapshot, key => {
             resized = receive(0.6)
             assert "PTY Dashboard" in resized and "c clear" in resized, resized
             assert "line-600" in resized, resized
+        key(b"\x1b[A")
         selected = key(b"1")
+        assert "line-600" in selected, "selecting a service should return logs to live: " + selected
         assert "n append" in selected, selected
         assert "Esc back" in selected and "1–9 select" in selected, selected
         assert "Ctrl+C" not in selected and "c clear" not in selected and "↑↓" not in selected, selected

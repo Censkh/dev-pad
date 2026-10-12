@@ -65,6 +65,7 @@ export async function mountUI(
   let anchor: number | undefined;
   let logHeight = 1;
   let previousFrame = "";
+  let anchoredSelection: string | undefined;
   const esc = "\x1b[";
   const color = (tone: string) => {
     const hex = colors[tone] ?? tone;
@@ -105,14 +106,17 @@ export async function mountUI(
   const render = () => {
     if (disposed) return;
     const snapshot = getSnapshot();
+    // Log ids differ per filter, so a scroll position never carries across selections.
+    if (snapshot.selectedId !== anchoredSelection) {
+      anchor = undefined;
+      anchoredSelection = snapshot.selectedId;
+    }
+    const selectedName = snapshot.services.find((service) => service.id === snapshot.selectedId)?.name;
     const width = Math.max(0, (output.columns || 80) - 1);
     const height = Math.max(1, output.rows || 24);
     const lines: string[] = [];
     const line = (text: string, tone = "foreground") => lines.push(`${color(tone)}${clip(text, width)}${esc}0m${esc}K`);
-    line(
-      ` ${snapshot.title}${snapshot.selectedId ? ` · Selected: ${snapshot.services.find((service) => service.id === snapshot.selectedId)?.name}` : ""}`,
-      "primary",
-    );
+    line(` ${snapshot.title}${snapshot.selectedId ? ` · Selected: ${selectedName}` : ""}`, "primary");
     const details: Array<[string, string]> = [];
     for (const [index, service] of snapshot.services.entries()) {
       const appearance = statusAppearance(service.status);
@@ -132,12 +136,19 @@ export async function mountUI(
     const logs = snapshot.logs.slice(-500);
     logHeight = Math.max(1, height - lines.length - 4);
     const end = logEnd(logs);
-    line(` ─ Recent logs · ${end}/${logs.length}${anchor === undefined ? " · live" : " · scrolled"} ─`, "primary");
+    line(
+      ` ─ ${selectedName ? `${selectedName} logs` : "Recent logs"} · ${end}/${logs.length}${anchor === undefined ? " · live" : " · scrolled"} ─`,
+      "primary",
+    );
     const visibleLogs = logs.slice(Math.max(0, end - logHeight), end);
     for (let i = 0; i < logHeight; i++) {
       const entry = visibleLogs[i];
       line(
-        entry ? ` [${entry.source}] ${entry.message}` : i === 0 ? " Waiting for service output…" : "",
+        entry
+          ? ` [${entry.source}] ${entry.message}`
+          : i === 0
+            ? ` Waiting for ${selectedName ?? "service"} output…`
+            : "",
         entry && /\b(error|failed|fatal)\b/i.test(entry.message) ? "danger" : "muted",
       );
     }

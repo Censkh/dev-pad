@@ -325,11 +325,35 @@ if (process.argv[2] === "grandchild") {
       await dashboard.key("z");
       await dashboard.health();
       assert.ok(dashboard.snapshot().logs.some((log) => log.message === "action"));
+      await dashboard.key("escape");
       assert.ok(dashboard.snapshot().logs.some((log) => log.message === "polled"));
       await dashboard.shutdown();
       assert.deepEqual(events, ["start db", "start web", "stop web", "stop db"]);
     } finally {
       release();
+      await dashboard.shutdown();
+    }
+  });
+
+  test("selecting a service filters logs to that service", async () => {
+    const dashboard = createDashboard({ title: "Filter", services: [service("web"), service("db")] });
+    try {
+      dashboard.ctx.log("web", "web one");
+      dashboard.ctx.log("db", "db one");
+      dashboard.ctx.log("supervisor", "supervisor one");
+      dashboard.ctx.log("web", "web two");
+      const messages = () => dashboard.snapshot().logs.map((log) => log.message);
+      assert.deepEqual(messages(), ["web one", "db one", "supervisor one", "web two"]);
+      await dashboard.key("1");
+      assert.deepEqual(messages(), ["web one", "web two"]);
+      await dashboard.key("2");
+      assert.deepEqual(messages(), ["db one"]);
+      await dashboard.key("2");
+      assert.deepEqual(messages(), ["web one", "db one", "supervisor one", "web two"]);
+      await dashboard.key("1");
+      await dashboard.key("escape");
+      assert.equal(messages().length, 4);
+    } finally {
       await dashboard.shutdown();
     }
   });
