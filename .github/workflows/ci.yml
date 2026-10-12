@@ -92,6 +92,8 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: npm install --global yarn@1.22.22
         if: matrix.package-manager == 'yarn'
+      - run: npm install --global pnpm@10
+        if: matrix.package-manager == 'pnpm'
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:

@@ -47,7 +47,13 @@ const packageTarball = async (directory) => {
   return join(directory, JSON.parse(output)[0].filename);
 };
 
-const installArgs = (manager) => (manager === "bun" ? ["install"] : ["install", "--ignore-scripts"]);
+// Yarn 1 enforces engines; OpenTUI declares a newer Node but dev-pad only loads it under Bun.
+const installArgs = (manager) =>
+  manager === "bun"
+    ? ["install"]
+    : manager === "yarn"
+      ? ["install", "--ignore-scripts", "--ignore-engines"]
+      : ["install", "--ignore-scripts"];
 
 const testFixture = async (manager, name, dependencies, expectsHostReact) => {
   const directory = await mkdtemp(join(tmpdir(), `dev-pad-${manager}-${name}-`));
@@ -88,7 +94,8 @@ test("package managers share React between dev-pad and OpenTUI", async () => {
         continue;
       }
       await testFixture(manager, "host-react", { "dev-pad": `file:${tarball}`, react: "19.3.0" }, true);
-      await testFixture(manager, "missing-react", { "dev-pad": `file:${tarball}` }, false);
+      // Yarn 1 never installs peer dependencies, so its users add React themselves.
+      if (manager !== "yarn") await testFixture(manager, "missing-react", { "dev-pad": `file:${tarball}` }, false);
       console.log(`ok - ${manager}: host and installed-peer React resolution`);
     }
   } finally {

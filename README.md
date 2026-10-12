@@ -17,6 +17,9 @@ Install in your project:
 npm install --save-dev dev-pad
 ```
 
+Yarn 1 does not install peer dependencies, so add React too
+(`yarn add --dev dev-pad react`) and install with `--ignore-engines`.
+
 Add a `dev-pad.config.ts` using the configuration below, then run `npx dev-pad`.
 To try the standalone example first:
 
