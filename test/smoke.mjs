@@ -358,6 +358,24 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
+  test("each source keeps its own log history", async () => {
+    const dashboard = createDashboard({ title: "Limit", logLimit: 3, services: [service("web"), service("db")] });
+    try {
+      dashboard.ctx.log("db", "db one");
+      for (let line = 1; line <= 10; line++) dashboard.ctx.log("web", `web ${line}`);
+      const messages = () => dashboard.snapshot().logs.map((log) => log.message);
+      assert.deepEqual(messages(), ["db one", "web 8", "web 9", "web 10"]);
+      await dashboard.key("2");
+      assert.deepEqual(messages(), ["db one"]);
+      await dashboard.key("c");
+      assert.deepEqual(messages(), []);
+      dashboard.ctx.log("db", "db two");
+      assert.deepEqual(messages(), ["db two"]);
+    } finally {
+      await dashboard.shutdown();
+    }
+  });
+
   test("restart-all stops dependents before dependencies", async () => {
     const events = [];
     const lifecycle = (id, extra) =>

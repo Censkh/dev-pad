@@ -2,10 +2,25 @@
 
 import { spawn } from "node:child_process";
 import process from "node:process";
-import { createCliRenderer } from "@opentui/core";
+import { createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
-import { useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cleanText, palette, type Snapshot, type StatusItem, statusAppearance } from "./ui.js";
+
+// Rows rendered at the live tail; older ones load in chunks as the log panel reaches its top.
+const logWindow = 300;
+
+/** Index of the first entry whose id is at least `id`; entries are sorted by id. */
+function firstAtOrAfter(logs: Snapshot["logs"], id: number) {
+  let low = 0;
+  let high = logs.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (logs[middle].id < id) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
 
 async function writeSystemClipboard(value: string): Promise<boolean> {
   const commands =
@@ -44,16 +59,72 @@ export async function mountUI(
 ): Promise<() => void> {
   const colors: Record<string, string> = { ...palette, ...theme };
   let disposed = false;
+  const LogLine = memo(({ entry, sourceColor }: { entry: Snapshot["logs"][number]; sourceColor: string }) => (
+    <text id={`log-${entry.id}`} wrapMode="word">
+      <span fg={sourceColor}>[{cleanText(entry.source).padEnd(10)}]</span>
+      <span
+        fg={
+          /\b(error|failed|fatal)\b|exited with code [1-9]/i.test(entry.message)
+            ? colors.danger
+            : /\bwarn(ing)?\b/i.test(entry.message)
+              ? colors.warning
+              : colors.muted
+        }
+      >
+        {` ${cleanText(entry.message)}`}
+      </span>
+    </text>
+  ));
   const Dashboard = () => {
     const [snapshot, setSnapshot] = useState(getSnapshot);
     const renderer = useRenderer();
     const { width, height } = useTerminalDimensions();
     const compact = width < 68;
     const small = height < 20;
-    const logs = snapshot.logs.slice(-500);
+    const logs = snapshot.logs;
     const selectedName = cleanText(snapshot.services.find((service) => service.id === snapshot.selectedId)?.name ?? "");
+    // Only a window of rows is rendered. While scrolled away from the tail, `startId` pins its first row so new
+    // output can't shift the view; reaching the top loads the previous chunk.
+    const [range, setRange] = useState<{ selectedId?: string; startId?: number }>({});
+    const startId = range.selectedId === snapshot.selectedId ? range.startId : undefined;
+    const start = startId === undefined ? Math.max(0, logs.length - logWindow) : firstAtOrAfter(logs, startId);
+    const rendered = logs.slice(start);
+    const view = useRef({ logs, start, pinned: false, selectedId: snapshot.selectedId });
+    view.current = { logs, start, pinned: startId !== undefined, selectedId: snapshot.selectedId };
+    const scrollbox = useRef<ScrollBoxRenderable | null>(null);
+    // The first row before older rows were prepended; scrolling by its new offset keeps the view in place.
+    const anchorRow = useRef<number | undefined>(undefined);
+    const previous = useRef({ start, firstId: rendered[0]?.id, selectedId: snapshot.selectedId });
+    useLayoutEffect(() => {
+      const before = previous.current;
+      if (before.selectedId === snapshot.selectedId && start < before.start && before.firstId !== undefined)
+        anchorRow.current = before.firstId;
+      previous.current = { start, firstId: rendered[0]?.id, selectedId: snapshot.selectedId };
+    });
+    const attachLogs = useCallback((box: ScrollBoxRenderable | null) => {
+      scrollbox.current = box;
+      if (!box) return;
+      // Chain OpenTUI's own handler, which recalculates the scrollbars for the new content size.
+      const resize = box.content.onSizeChange;
+      box.content.onSizeChange = () => {
+        resize?.call(box.content);
+        if (anchorRow.current === undefined) return;
+        const row = box.getRenderable(`log-${anchorRow.current}`);
+        anchorRow.current = undefined;
+        if (row) box.scrollTop += row.getLayoutNode().getComputedTop();
+      };
+    }, []);
     useEffect(() => {
-      const timer = setInterval(() => setSnapshot({ ...getSnapshot() }), 100);
+      const timer = setInterval(() => {
+        setSnapshot({ ...getSnapshot() });
+        const box = scrollbox.current;
+        if (!box) return;
+        const { logs, start, pinned, selectedId } = view.current;
+        const atTail = box.scrollTop + box.viewport.height >= box.scrollHeight - 1;
+        if (box.scrollTop <= 0 && start > 0) setRange({ selectedId, startId: logs[Math.max(0, start - logWindow)].id });
+        else if (!atTail && !pinned && logs[start]) setRange({ selectedId, startId: logs[start].id });
+        else if (atTail && pinned && logs.length - start > logWindow) setRange({ selectedId });
+      }, 100);
       return () => clearInterval(timer);
     }, []);
     const copySelection = async () => {
@@ -173,7 +244,8 @@ export async function mountUI(
         </scrollbox>
         <scrollbox
           key={snapshot.selectedId ?? "all"}
-          title={selectedName ? ` ${selectedName} logs · ${logs.length} ` : ` Recent logs · ${logs.length}/500 `}
+          ref={attachLogs}
+          title={selectedName ? ` ${selectedName} logs · ${logs.length} ` : ` Recent logs · ${logs.length} `}
           titleColor={colors.primary}
           border
           borderStyle="rounded"
@@ -190,34 +262,21 @@ export async function mountUI(
           focused
         >
           {logs.length ? (
-            logs.map((entry) => (
-              <text key={entry.id} wrapMode="word">
-                <span
-                  fg={
-                    colors[
-                      ["primary", "warning", "info", "success"][
-                        Math.max(
-                          0,
-                          snapshot.services.findIndex((service) => service.id === entry.source),
-                        ) % 4
-                      ]
+            rendered.map((entry) => (
+              <LogLine
+                key={entry.id}
+                entry={entry}
+                sourceColor={
+                  colors[
+                    ["primary", "warning", "info", "success"][
+                      Math.max(
+                        0,
+                        snapshot.services.findIndex((service) => service.id === entry.source),
+                      ) % 4
                     ]
-                  }
-                >
-                  [{cleanText(entry.source).padEnd(10)}]
-                </span>
-                <span
-                  fg={
-                    /\b(error|failed|fatal)\b|exited with code [1-9]/i.test(entry.message)
-                      ? colors.danger
-                      : /\bwarn(ing)?\b/i.test(entry.message)
-                        ? colors.warning
-                        : colors.muted
-                  }
-                >
-                  {` ${cleanText(entry.message)}`}
-                </span>
-              </text>
+                  ]
+                }
+              />
             ))
           ) : (
             <text fg={colors.muted}>Waiting for {selectedName || "service"} output…</text>

@@ -151,6 +151,19 @@ const dispose = await mountUI(() => snapshot, key => {
         assert "line-600" not in appended, appended
         down = key(b"\x1b[B\x1b[B")
         assert "line-600" in down, down
+        top = key(b"\x1b[H")
+        receive(0.6)
+        if runtime == "bun":
+            # Older rows load lazily; the view stays on the row that was at the top.
+            assert re.search(r"line-[1-9]\d*\b", screen.text()) and not re.search(r"line-0\b", screen.text()), screen.text()
+        for _ in range(5):
+            if re.search(r"line-0\b", top):
+                break
+            top = key(b"\x1b[H")
+            top = receive(0.4)
+        assert re.search(r"line-0\b", top), top
+        end = key(b"\x1b[F")
+        assert "line-600" in end and not re.search(r"line-0\b", end), end
         for rows, columns in [(12, 40), (24, 90)]:
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
             screen = Screen(rows, columns)

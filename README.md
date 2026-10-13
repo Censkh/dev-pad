@@ -110,7 +110,7 @@ The highlighted row and action bar show which service you are controlling.
 | `Esc` | No action | Return to the top level |
 | `Ctrl+C` | Quit and stop services | Quit and stop services |
 | `c` | Clear logs | Clear logs |
-| `↑` / `↓` | Scroll logs | Scroll logs |
+| `↑` / `↓`, `PgUp` / `PgDn`, `Home` / `End` | Scroll logs | Scroll logs |
 
 While a service is selected, the log panel shows only that service's output and
 the action bar shows **its actions**, **Esc** to clear the selection, and **1–9**
@@ -225,6 +225,11 @@ Commands are argument arrays and do not run through a shell automatically.
 | `actions` / `status()` | Custom keyboard actions and live status items |
 | `tick(ctx)` | Periodic asynchronous work, run on each health check whether or not the service is running |
 | `allowOccupiedPort` | Skip the startup port conflict check, e.g. for an existing Docker service |
+
+Each log source (a service, `supervisor`, or a utility command's source) keeps its
+own last 5,000 lines, so a noisy service never pushes out a quiet one's history. Set
+`logLimit` on the top-level config to change it. The dashboard renders only the
+lines near the visible area and loads older ones as you scroll up.
 
 The CLI defaults the project directory to the config's directory; `config.cwd`
 overrides it. Direct calls to `runDashboard(config)` or `createDashboard(config)`

@@ -43,6 +43,8 @@ export type Config = {
   status?: () => StatusItem[];
   theme?: Record<string, string>;
   tick?: (ctx: ServiceContext) => Promise<void>;
+  /** Log lines kept for each source (service, supervisor or utility), so a noisy one never evicts another's history. */
+  logLimit?: number;
 };
 export type ServiceContext = {
   start(id: string): Promise<void>;
@@ -165,7 +167,19 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
   const states = new Map(
     services.map((service) => [service.id, { status: "stopped", active: false, generation: 0 } as State]),
   );
-  const logs: LogEntry[] = [];
+  const logLimit = Math.max(1, config.logLimit ?? 5000);
+  const logsBySource = new Map<string, LogEntry[]>();
+  // Views are rebuilt only after new output, not on every 100 ms UI refresh.
+  let logVersion = 0;
+  let logView: { version: number; selectedId?: string; logs: LogEntry[] } | undefined;
+  const visibleLogs = () => {
+    if (logView?.version === logVersion && logView.selectedId === selectedId) return logView.logs;
+    const logs = selectedId
+      ? [...(logsBySource.get(selectedId) ?? [])]
+      : [...logsBySource.values()].flat().sort((a, b) => a.id - b.id);
+    logView = { version: logVersion, selectedId, logs };
+    return logs;
+  };
   const utilities = new Set<RunningProcess>();
   let logId = 0;
   let closing = false;
@@ -187,8 +201,11 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
   const url = (service: Service) => (typeof service.url === "function" ? service.url() : (service.url ?? ""));
   const log = (source: string, message: string) => {
     const clean = stripVTControlCharacters(message);
+    let logs = logsBySource.get(source);
+    if (!logs) logsBySource.set(source, (logs = []));
     logs.push({ id: ++logId, source, message: clean });
-    if (logs.length > 500) logs.shift();
+    if (logs.length > logLimit) logs.shift();
+    logVersion++;
     if (options.plain) process.stdout.write(`[${source}] ${clean}\n`);
   };
   const ctx: ServiceContext = {
@@ -402,7 +419,7 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
         items: service.status?.() ?? [],
       })),
       // A selected service narrows the log panel to that service's own output.
-      logs: selectedId ? logs.filter((entry) => entry.source === selectedId) : [...logs],
+      logs: visibleLogs(),
       items: config.status?.() ?? [],
       actions: availableActions().map(({ key, label }) => ({ key, label })),
       actionLabel,
@@ -416,7 +433,8 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
       }),
     async key(key: string) {
       if (key === "c") {
-        logs.length = 0;
+        logsBySource.clear();
+        logVersion++;
         return;
       }
       if (key === "escape") {

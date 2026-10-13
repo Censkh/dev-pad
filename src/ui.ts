@@ -133,7 +133,7 @@ export async function mountUI(
     if (details.length > budget && visible.length)
       visible[visible.length - 1] = [` … ${details.length - budget + 1} more status rows`, "muted"];
     for (const [text, tone] of visible) line(text, tone);
-    const logs = snapshot.logs.slice(-500);
+    const logs = snapshot.logs;
     logHeight = Math.max(1, height - lines.length - 4);
     const end = logEnd(logs);
     line(
@@ -166,9 +166,15 @@ export async function mountUI(
     }
   };
   const keypress = (text: string, key: Key = {}) => {
-    if (key.name === "up" || key.name === "down") {
-      const logs = getSnapshot().logs.slice(-500);
-      const end = Math.min(logs.length, Math.max(logHeight, logEnd(logs) + (key.name === "up" ? -1 : 1)));
+    const scroll = (
+      { up: -1, down: 1, pageup: -logHeight, pagedown: logHeight, home: -Infinity, end: Infinity } as Record<
+        string,
+        number
+      >
+    )[key.name ?? ""];
+    if (scroll !== undefined) {
+      const logs = getSnapshot().logs;
+      const end = Math.min(logs.length, Math.max(logHeight, logEnd(logs) + scroll));
       anchor = end >= logs.length ? undefined : logs[end - 1]?.id;
       render();
       return;
