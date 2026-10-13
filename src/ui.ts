@@ -6,10 +6,19 @@ export type StatusItem = { label: string; value: string; tone?: string };
 export type Snapshot = {
   title: string;
   selectedId?: string;
-  services: Array<{ id: string; name: string; status: string; url: string; items?: StatusItem[] }>;
+  services: Array<{
+    id: string;
+    name: string;
+    status: string;
+    url: string;
+    /** Shown instead of the URL, e.g. which process holds a busy service's port. */
+    detail?: string;
+    items?: StatusItem[];
+  }>;
   logs: Array<{ id: number; source: string; message: string }>;
   items: StatusItem[];
-  actions: Array<{ key: string; label: string }>;
+  /** `highlight` marks the action that resolves the selected service's problem, such as freeing a busy port. */
+  actions: Array<{ key: string; label: string; highlight?: boolean }>;
   actionLabel: string;
 };
 
@@ -34,6 +43,8 @@ export function statusAppearance(status: string) {
       return { tone: "success", marker: "●" };
     case "failed":
       return { tone: "danger", marker: "✗" };
+    case "busy":
+      return { tone: "warning", marker: "!" };
     case "restarting":
       return { tone: "warning", marker: "↻" };
     case "starting":
@@ -121,7 +132,7 @@ export async function mountUI(
     for (const [index, service] of snapshot.services.entries()) {
       const appearance = statusAppearance(service.status);
       details.push([
-        ` ${`${snapshot.selectedId === service.id ? ">" : ""}${index + 1}.`.padEnd(4)}${appearance.marker}  ${service.name}  ${service.status}  ${service.url}`,
+        ` ${`${snapshot.selectedId === service.id ? ">" : ""}${index + 1}.`.padEnd(4)}${appearance.marker}  ${service.name}  ${service.status}${service.detail ? ` · ${service.detail}` : `  ${service.url}`}`,
         appearance.tone,
       ]);
       for (const item of service.items ?? [])
@@ -154,7 +165,7 @@ export async function mountUI(
     }
     line(` ${snapshot.actionLabel}`, "info");
     line(` ${"─".repeat(Math.max(0, width - 1))}`, "muted");
-    const actions = snapshot.actions.map(({ key, label }) => `${key} ${label}`);
+    const actions = snapshot.actions.map(({ key, label, highlight }) => `${highlight ? "▶ " : ""}${key} ${label}`);
     line(
       ` ${(snapshot.selectedId ? [...actions, "Esc back", "1–9 select"] : [`${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit`, "c clear", ...actions, "↑↓ logs", ...(snapshot.services.length ? ["1–9 select"] : [])]).join(" · ")}`,
       "warning",

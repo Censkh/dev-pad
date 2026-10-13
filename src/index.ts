@@ -3,7 +3,18 @@ import { createConnection } from "node:net";
 import { resolve, sep } from "node:path";
 import { promisify, stripVTControlCharacters } from "node:util";
 import type { LogEntry } from "./logs.js";
+import { type CommandRunner, killPortListeners, listeningPids, portListeners, servicePorts } from "./ports.js";
 import { launch, type RunningProcess, terminate } from "./process.js";
+
+export {
+  type CommandRunner,
+  type KillPortsResult,
+  killPortListeners,
+  listeningPids,
+  type PortListener,
+  portListeners,
+  servicePorts,
+} from "./ports.js";
 
 export type StatusItem = {
   label: string;
@@ -21,6 +32,12 @@ export type Service = {
   name: string;
   command?: string[];
   cwd?: string;
+  /**
+   * Every TCP port the service listens on, including secondary servers it starts (e.g. a second Worker or an
+   * inspector). The first is used for the default health check. Use `false` for a service that listens on nothing.
+   */
+  ports: readonly number[] | false;
+  /** @deprecated Use `ports`. Accepted only when it is also listed in `ports`, for configs shared with dev-pad 0.4. */
   port?: number;
   url?: string | (() => string);
   env?: Record<string, string> | (() => Record<string, string>);
@@ -74,6 +91,7 @@ export function validateConfig(config: Config) {
     if (!service.command?.length && !service.start) throw new Error(`${service.id} needs a command or start hook`);
     if (service.command?.some((arg) => typeof arg !== "string" || arg.includes("\0")))
       throw new Error(`Invalid command for ${service.id}`);
+    servicePorts(service);
   }
   const visited = new Set<string>();
   const visit = (id: string, path: Set<string>) => {
@@ -123,10 +141,7 @@ async function reclaimPort(port: number, cwd: string, log: (message: string) => 
       return "";
     }
   };
-  const pids = (await output("lsof", ["-nP", "-t", `-iTCP:${port}`, "-sTCP:LISTEN"]))
-    .split(/\s+/)
-    .map(Number)
-    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid);
+  const pids = (await listeningPids(port)).filter((pid) => pid > 1 && pid !== process.pid);
   let reclaimed = false;
   for (const pid of new Set(pids)) {
     const processCwd = (await output("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]))
@@ -150,7 +165,31 @@ async function reclaimPort(port: number, cwd: string, log: (message: string) => 
   return false;
 }
 
-export function createDashboard(config: Config, options: { plain?: boolean } = {}) {
+const portInUse = async (port: number) =>
+  (await Promise.all([portListening(port), portListening(port, "::1")])).some(Boolean);
+
+/** A declared port held by a process dev-pad does not run for this service. */
+type PortHolder = { port: number; pid?: number; command?: string };
+const describeHolder = ({ port, pid, command }: PortHolder) =>
+  `:${port} held by ${pid ? `PID ${pid}${command ? ` (${command})` : ""}` : "another process"}`;
+class PortBusyError extends Error {
+  constructor(
+    readonly service: Service,
+    readonly holder: PortHolder,
+  ) {
+    super(`${service.name}: ${describeHolder(holder)}; press k to free it`);
+  }
+}
+/** How often stopped services' ports are checked for other listeners. */
+const portPollInterval = 3000;
+
+export type DashboardOptions = {
+  plain?: boolean;
+  /** Runs the read-only `lsof`/`netstat` lookups for busy ports. Defaults to spawning the real utility. */
+  run?: CommandRunner;
+};
+
+export function createDashboard(config: Config, options: DashboardOptions = {}) {
   validateConfig(config);
   const cwd = resolve(config.cwd ?? process.cwd());
   const services = config.services.map((service) => ({ ...service }));
@@ -163,6 +202,10 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
     starting?: Promise<void>;
     stopping?: Promise<void>;
     generation: number;
+    /** Set while the service is not running and another process listens on one of its ports. */
+    busy?: PortHolder;
+    /** The last start was refused because a port was busy. */
+    blockedStart?: boolean;
   };
   const states = new Map(
     services.map((service) => [service.id, { status: "stopped", active: false, generation: 0 } as State]),
@@ -263,13 +306,14 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
         try {
           for (const dep of service.dependsOn ?? []) await ctx.start(dep);
           if (closing) return;
-          if (
-            service.port &&
-            !service.allowOccupiedPort &&
-            (await Promise.all([portListening(service.port), portListening(service.port, "::1")])).some(Boolean) &&
-            !(await reclaimPort(service.port, cwd, (message) => log("supervisor", message)))
-          )
-            throw new Error(`${service.name}: port ${service.port} is already in use`);
+          if (!service.allowOccupiedPort)
+            for (const port of servicePorts(service))
+              if ((await portInUse(port)) && !(await reclaimPort(port, cwd, (message) => log("supervisor", message)))) {
+                const holder = (await portListeners([port], { run: options.run })).get(port)?.[0];
+                throw new PortBusyError(service, { port, ...holder });
+              }
+          s.busy = undefined;
+          s.blockedStart = false;
           s.status = "starting";
           s.active = true;
           s.cleanupNeeded = Boolean(service.stop);
@@ -297,11 +341,17 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
               log(id, `Process exited with code ${code}`);
             });
           }
-          s.status = service.port || service.probe ? "starting" : "ready";
+          s.status = servicePorts(service).length || service.probe ? "starting" : "ready";
           log("supervisor", `Started ${service.name}`);
         } catch (error) {
-          s.status = "failed";
           exitCode = 1;
+          if (error instanceof PortBusyError && error.service === service) {
+            // Nothing was launched: the service stays stopped, flagged busy until the port is freed.
+            s.status = "stopped";
+            s.busy = error.holder;
+            s.blockedStart = true;
+            log(id, error.message);
+          } else s.status = "failed";
           throw error;
         }
       })();
@@ -375,7 +425,83 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
       { key: "q", label: "stop", run: () => ctx.stop(service.id) },
       ...(url(service) ? [{ key: "o", label: "open", run: () => ctx.open(url(service)) }] : []),
     ];
+    const busy = isBusy(service.id);
+    const kill: Action & { highlight?: boolean } = {
+      key: "k",
+      label: busy ? `free :${busy.port} (busy)` : "kill ports",
+      highlight: Boolean(busy),
+      run: () => killPorts(service.id),
+    };
+    // A busy service leads with the action that frees it.
+    defaults.splice(busy ? 0 : 2, 0, kill);
     return [...defaults.filter((action) => !custom.some((item) => item.key === action.key)), ...custom];
+  };
+  const idle = (s: State) => !s.active && !s.child && !s.starting && !s.stopping;
+  const isBusy = (id: string) => {
+    const s = state(id);
+    return idle(s) ? s.busy : undefined;
+  };
+  const setBusy = (service: Service, holder: PortHolder | undefined) => {
+    const s = state(service.id);
+    const before = s.busy;
+    s.busy = holder;
+    if (holder && (!before || before.port !== holder.port || before.pid !== holder.pid))
+      log(service.id, `${service.name} is busy: ${describeHolder(holder)}; press k to free it`);
+    else if (!holder && before) {
+      log(service.id, `:${before.port} is free again`);
+      if (s.blockedStart && !s.starting) log(service.id, `Press r to start ${service.name}`);
+    }
+  };
+  let lastPortPoll = 0;
+  /** One lsof/netstat call covers every declared port of the services that are not running. */
+  const pollPorts = async (ids?: string[]) => {
+    lastPortPoll = Date.now();
+    const candidates = services.filter(
+      (service) =>
+        (!ids || ids.includes(service.id)) &&
+        !service.allowOccupiedPort &&
+        servicePorts(service).length &&
+        idle(state(service.id)),
+    );
+    if (!candidates.length) return;
+    const listeners = await portListeners(candidates.flatMap(servicePorts), { run: options.run });
+    for (const service of candidates) {
+      if (!idle(state(service.id))) continue;
+      const port = servicePorts(service).find((port) => listeners.get(port)?.length);
+      setBusy(service, port === undefined ? undefined : { port, ...listeners.get(port)?.[0] });
+    }
+  };
+  const killPorts = async (id: string) => {
+    const service = serviceById(id);
+    const ports = servicePorts(service);
+    if (!ports.length) {
+      log(id, `${service.name} declares \`ports: false\`, so there is nothing to kill`);
+      return;
+    }
+    const list = ports.map((port) => `:${port}`).join(", ");
+    const s = state(id);
+    if (s.active || s.child || s.cleanupNeeded || s.starting) {
+      log(id, `Stopping ${service.name} before killing ${list}`);
+      await ctx.stop(id);
+    }
+    const result = await killPortListeners(ports);
+    const describe = (item: { pid: number; command: string }) =>
+      `PID ${item.pid} (${item.command.length > 80 ? `${item.command.slice(0, 79)}…` : item.command || "unknown"})`;
+    for (const item of result.killed)
+      log(id, `Killed ${describe(item)}${item.reason === "parent" ? ", parent of the listener" : ""} on :${item.port}`);
+    for (const item of result.skipped) log(id, `Left ${describe(item)} on :${item.port}: ${item.reason}`);
+    if (result.idle.length) log(id, `Nothing listening on ${result.idle.map((port) => `:${port}`).join(", ")}`);
+    if (result.stillListening.length)
+      log(id, `Still listening on ${result.stillListening.map((port) => `:${port}`).join(", ")}`);
+    await pollPorts([id]);
+    if (s.blockedStart && !s.busy) {
+      s.blockedStart = false;
+      // A start refused for a busy port resumes if the service is meant to run.
+      if (service.autostart !== false) {
+        log(id, `Starting ${service.name} now its ports are free`);
+        await ctx.start(id);
+      } else log(id, `Ports are free; press r to start ${service.name}`);
+    }
   };
   const perform = (label: string, run: () => Promise<unknown> | unknown) => {
     if (closing || actionTask) return actionTask ?? Promise.resolve();
@@ -411,17 +537,23 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
       services: services.map((service) => ({
         id: service.id,
         name: service.name,
-        status:
-          state(service.id).status === "stopped" && !state(service.id).hasStarted
+        status: isBusy(service.id)
+          ? "busy"
+          : state(service.id).status === "stopped" && !state(service.id).hasStarted
             ? "not started"
             : state(service.id).status,
         url: url(service),
+        ...(isBusy(service.id) ? { detail: describeHolder(isBusy(service.id) as PortHolder) } : {}),
         items: service.status?.() ?? [],
       })),
       // A selected service narrows the log panel to that service's own output.
       logs: visibleLogs(),
       items: config.status?.() ?? [],
-      actions: availableActions().map(({ key, label }) => ({ key, label })),
+      actions: availableActions().map((action) => ({
+        key: action.key,
+        label: action.label,
+        ...((action as { highlight?: boolean }).highlight ? { highlight: true } : {}),
+      })),
       actionLabel,
     }),
     start: () =>
@@ -449,11 +581,14 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
       const action = availableActions().find((action) => action.key === key);
       if (action) await perform(action.label, () => action.run(ctx));
     },
+    /** Checks now whether stopped services' ports are held; the health loop also does this every few seconds. */
+    checkPorts: () => pollPorts(),
     health() {
       if (closing || actionTask || healthTask) return healthTask ?? Promise.resolve();
       healthTask = (async () => {
         await config.tick?.(ctx);
         await Promise.all(services.map((service) => service.tick?.(ctx)));
+        if (Date.now() - lastPortPoll >= portPollInterval) await pollPorts();
         await Promise.all(
           services.map(async (service) => {
             const s = state(service.id);
@@ -466,10 +601,7 @@ export function createDashboard(config: Config, options: { plain?: boolean } = {
                 const response = await fetch(url(service), { signal: AbortSignal.timeout(900) });
                 healthy = response.status < 500;
                 await response.body?.cancel();
-              } else if (service.port)
-                healthy = (await Promise.all([portListening(service.port), portListening(service.port, "::1")])).some(
-                  Boolean,
-                );
+              } else if (servicePorts(service).length) healthy = await portInUse(servicePorts(service)[0]);
             } catch {
               healthy = false;
             }
@@ -552,7 +684,9 @@ export async function runDashboard(config: Config, options: { plain?: boolean } 
     await dashboard.start();
     if (
       !interactive &&
-      dashboard.snapshot().services.every((service) => ["failed", "stopped", "not started"].includes(service.status))
+      dashboard
+        .snapshot()
+        .services.every((service) => ["failed", "stopped", "not started", "busy"].includes(service.status))
     )
       await shutdown();
     await done;

@@ -48,7 +48,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - run: node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs
+      - run: node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs test/ports.mjs
       - run: node test/example.mjs
       - run: python3 test/ui.py node
 
@@ -70,7 +70,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - run: bun test --timeout 10000 test/smoke.test.mjs test/lifecycle.test.mjs test/expo.test.mjs
+      - run: bun test --timeout 10000 test/smoke.test.mjs test/lifecycle.test.mjs test/expo.test.mjs test/ports.test.mjs
       - run: bun test/example.mjs
       - run: python3 test/ui.py bun
 
@@ -124,6 +124,6 @@ jobs:
         with:
           name: dist
           path: dist
-      - run: deno test -A test/smoke.mjs test/lifecycle.mjs test/expo.mjs
+      - run: deno test -A test/smoke.mjs test/lifecycle.mjs test/expo.mjs test/ports.mjs
       - run: deno run -A test/example.mjs
       - run: python3 test/ui.py deno

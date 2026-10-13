@@ -63,20 +63,31 @@ export default defineConfig({
       id: "web",
       name: "Web",
       command: ["bun", "run", "dev:web"],
-      port: 3000,
+      ports: [3000],
       url: "http://localhost:3000",
     },
     {
       id: "api",
       name: "API",
-      command: ["bun", "run", "dev:api"],
-      port: 3001,
+      // Every port the service listens on, including secondary servers it starts.
+      ports: [3001, 3002],
       url: "http://localhost:3001/health",
       probe: "http",
+    },
+    {
+      id: "assets",
+      name: "Asset watcher",
+      command: ["bun", "run", "watch:assets"],
+      // Required: say explicitly that this service listens on nothing.
+      ports: false,
     },
   ],
 });
 ```
+
+Every service must declare `ports`: a list of the TCP ports it listens on, or `false` for
+one that listens on none, such as a file watcher. dev-pad refuses to start a config that
+leaves it out.
 
 Run `dev-pad`, or add `"dev": "dev-pad"` to your project's package scripts.
 Use `dev-pad --check` to validate the config without starting services.
@@ -106,6 +117,7 @@ The highlighted row and action bar show which service you are controlling.
 | `1`–`9` | Select a service | Select another service |
 | `r` | Restart active services | Start or restart this service |
 | `q` | No action | Stop this service |
+| `k` | No action | Stop this service and kill whatever is listening on its ports; highlighted when it is busy |
 | `o` | No action | Open this service's URL, if configured |
 | `Esc` | No action | Return to the top level |
 | `Ctrl+C` | Quit and stop services | Quit and stop services |
@@ -119,8 +131,31 @@ still work, but their hints are hidden. Selection
 remains after an action. Windows also supports the Ctrl+Break signal for quitting.
 With Bun, drag to select and copy log text.
 
+Press `k` to free a selected service's ports when something is still holding them,
+such as an orphaned server from an earlier session. dev-pad stops the service if it is
+running, then terminates every process with a listening socket on its `ports`
+(SIGTERM, then SIGKILL after two seconds). If a listener's parent is a `wrangler`
+or `vite` dev process, or a runtime started with that port, the parent is stopped too
+so it cannot respawn the listener. Processes that are only connected to the port,
+dev-pad itself and its parent processes, container runtimes such as Docker, and SSH
+tunnels are never killed. The service's log shows each PID and command killed, or
+that nothing was listening. Listeners are found with `lsof` on macOS and Linux and
+`netstat` on Windows.
+
 A service that has never started displays **not started**. After it has run and
-stopped, it displays **stopped**. Health checks update running services' status.
+stopped, it displays **stopped**. Health checks update running services' status:
+**starting**, **ready**, **stopping**, or **failed** when its process exits with an error
+or its health check fails.
+
+A service that is not running displays **busy** when another process listens on one of
+its ports, with the port and the holder's PID and command, for example
+`busy · :6110 held by PID 123 (workerd)`. dev-pad checks the ports of every service that
+isn't running every few seconds, using one `lsof` (or `netstat`) call for all of them, so
+an orphan shows up before you press start, and the status clears once the port is free.
+A start refused because a port is held leaves the service **busy** rather than
+**failed**. Select it and press `k`, which leads the action bar while the service is busy,
+to free the port. dev-pad then starts the service if it is set to start automatically;
+otherwise press `r`. Services with `allowOccupiedPort` are never shown as busy.
 
 ## Custom actions and live status
 
@@ -146,7 +181,7 @@ export default defineConfig({
       name: "Expo",
       cwd: "packages/app",
       command: ["bun", "run", "expo", "start"],
-      port: 8081,
+      ports: [8081],
       url: "http://localhost:8081",
       autostart: false,
       terminal: true,
@@ -162,7 +197,7 @@ export default defineConfig({
 Use `config.actions` for dashboard-wide actions, such as regenerating shared files.
 These appear only at the top level. Keys must be unique within each scope;
 global action keys must also be unique together. `q` and `c` are reserved.
-Custom actions may override the default `r` or `o` behavior in their scope.
+Custom actions may override the default `r`, `o` or `k` behavior in their scope.
 
 Both `config.status()` and `service.status()` return live items with `label`,
 `value`, and an optional `tone`: `muted`, `info`, `success`, `warning`, or `danger`.
@@ -195,8 +230,8 @@ export default defineConfig({
 });
 ```
 
-Defaults: `id` is `mobile`, `name` is `Expo`, `command` is `bun run dev`, `port` is
-8081, `url` is Metro's address, and `terminal` is enabled. Other service options pass
+Defaults: `id` is `mobile`, `name` is `Expo`, `command` is `bun run dev`, Metro's `port` is
+8081 (or the first of `ports`) and is always included in `ports`, `url` is Metro's address, and `terminal` is enabled. Other service options pass
 through, and your `actions`, `status`, and `tick` are kept alongside the Expo ones.
 
 After the first Android launch, each health check runs `adb reverse` for Metro's port
@@ -206,7 +241,7 @@ the PATH; set `adb` to override it.
 
 ## Configuration reference
 
-Each service needs a unique `id`, a `name`, and a `command` or `start` hook.
+Each service needs a unique `id`, a `name`, `ports`, and a `command` or `start` hook.
 Commands are argument arrays and do not run through a shell automatically.
 
 | Option | Behavior |
@@ -215,7 +250,8 @@ Commands are argument arrays and do not run through a shell automatically.
 | `cwd` | Working directory, relative to the project directory |
 | `env` | Extra environment variables, or a function returning them; inherits the current environment |
 | `url` | URL string or function; enables the selected service's open action |
-| `port` | Checks for an occupied port before startup; supplies a TCP health check |
+| `ports` | Required. Every TCP port the service listens on, or `false` for none. Each is checked for an occupying process before startup, and `k` kills their listeners. The first supplies the default TCP health check |
+| `port` | Deprecated. Accepted only if it is also listed in `ports`, so one config can run with dev-pad 0.4 and 0.5 |
 | `probe` | `"http"` checks the URL, or supply an async function returning a boolean |
 | `autostart` | Defaults to enabled; set `false` to start manually |
 | `dependsOn` | Service IDs to start first and stop last |
@@ -224,7 +260,7 @@ Commands are argument arrays and do not run through a shell automatically.
 | `stop(ctx)` | Async cleanup after terminating the process |
 | `actions` / `status()` | Custom keyboard actions and live status items |
 | `tick(ctx)` | Periodic asynchronous work, run on each health check whether or not the service is running |
-| `allowOccupiedPort` | Skip the startup port conflict check, e.g. for an existing Docker service |
+| `allowOccupiedPort` | Skip the startup port conflict check for all of the service's ports |
 
 Each log source (a service, `supervisor`, or a utility command's source) keeps its
 own last 5,000 lines, so a noisy service never pushes out a quiet one's history. Set
@@ -246,8 +282,17 @@ does not stop its containers. Shutdown stops dependents before dependencies.
 On POSIX, dev-pad terminates managed process groups and escalates to SIGKILL after
 2.5 seconds. Windows currently terminates direct children only.
 
-If a port is occupied on POSIX, dev-pad uses `lsof` to reclaim a listener only when
-its working directory belongs to this project. Other occupied ports fail startup.
+If one of a service's ports is occupied on POSIX, dev-pad uses `lsof` to reclaim a listener
+only when its working directory belongs to this project. Other occupied ports fail startup;
+select the service and press `k` to free them.
+
+### Upgrading from 0.4
+
+Replace each service's `port: 3000` with `ports: [3000]`, add any other ports the service
+opens (a second dev server, a fixed inspector port), and set `ports: false` on services
+that listen on nothing. To keep one config working with both versions while you upgrade,
+keep `port` and add `...{ ports: [3000] }`: the spread passes dev-pad 0.4's types, which do
+not know `ports`.
 
 ### Action context
 
@@ -285,7 +330,9 @@ The Deno command uses `-A` for subprocess, environment, file, and network access
 
 The CLI searches for `dev-pad.config.ts`, `.mts`, `.js`, then `.mjs` in the current
 directory. Configs execute code when imported, including with `--check`.
-Redirected input or output automatically selects plain logging. Logs retain the
+Redirected input or output automatically selects plain logging. In plain mode, busy
+ports are reported in the logs, and dev-pad exits once no service is running (each is
+failed, stopped, not started or busy). Logs retain the
 latest 500 entries and collapse repeated carriage-return spinner frames.
 
 ## Contributing

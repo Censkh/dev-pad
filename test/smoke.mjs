@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,7 +51,7 @@ if (process.argv[2] === "grandchild") {
       await delay(20);
     }
   };
-  const service = (id, extra = {}) => ({ id, name: id, start: async () => {}, ...extra });
+  const service = (id, extra = {}) => ({ id, name: id, ports: false, start: async () => {}, ...extra });
 
   test("spinner redraws stay separate across ANSI sequences and chunk boundaries", async () => {
     for (const redraw of ["\r", "\x1b[1G\x1b[2K", "\x1b[2K\x1b[1G", "\x1b[G\x1b[K"]) {
@@ -95,7 +95,7 @@ if (process.argv[2] === "grandchild") {
   test("real subprocess logs, stdin, restart and process-group shutdown", async () => {
     const dashboard = createDashboard({
       title: "processes",
-      services: [{ id: "svc", name: "Service", command: command("service") }],
+      services: [{ id: "svc", name: "Service", ports: false, command: command("service") }],
     });
     const descendants = [];
     const messages = () =>
@@ -160,7 +160,7 @@ if (process.argv[2] === "grandchild") {
     }
     const failed = createDashboard({
       title: "failure",
-      services: [{ id: "bad", name: "bad", command: command("failure") }],
+      services: [{ id: "bad", name: "bad", ports: false, command: command("failure") }],
     });
     try {
       await failed.start();
@@ -570,7 +570,7 @@ if (process.argv[2] === "grandchild") {
         const title: string = "TypeScript CLI";
         export default {
           title,
-          services: [{ id: "checked", name: "Checked", env: { SECRET: "${secret}" }, start: async () => {
+          services: [{ id: "checked", name: "Checked", ports: false, env: { SECRET: "${secret}" }, start: async () => {
             writeFileSync(${JSON.stringify(started)}, "started");
             throw new Error("--check must not start services");
           } }],
@@ -612,6 +612,21 @@ if (process.argv[2] === "grandchild") {
     }
   });
 
+  test("CLI --version prints the package version", async () => {
+    const dashboard = createDashboard({ title: "version", services: [service("idle")] });
+    try {
+      const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+      const output = await dashboard.ctx.run([
+        ...runtime,
+        fileURLToPath(new URL("../dist/cli.js", import.meta.url)),
+        "--version",
+      ]);
+      assert.equal(output, version);
+    } finally {
+      await dashboard.shutdown();
+    }
+  });
+
   test("missing executable can be retried and recovered", async () => {
     const dashboard = createDashboard({
       title: "retry",
@@ -619,6 +634,7 @@ if (process.argv[2] === "grandchild") {
         {
           id: "retry",
           name: "retry",
+          ports: false,
           command: [`${self}.nonexistent-executable`],
         },
       ],

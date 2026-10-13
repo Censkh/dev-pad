@@ -67,7 +67,8 @@ if (process.argv[2] === "metro") {
     assert.equal(service.id, "mobile");
     assert.equal(service.name, "Expo");
     assert.deepEqual(service.command, ["bun", "run", "dev"]);
-    assert.equal(service.port, 8081);
+    assert.deepEqual(service.ports, [8081]);
+    assert.equal(service.port, undefined);
     assert.equal(service.url, "http://localhost:8081");
     assert.equal(service.terminal, true);
     assert.equal(service.autostart, false);
@@ -80,6 +81,13 @@ if (process.argv[2] === "metro") {
       ],
     );
     assert.deepEqual(service.status(), [{ label: "Extra", value: "yes" }]);
+  });
+
+  test("Metro's port comes from port or the first of ports and is always declared", () => {
+    assert.deepEqual(expo({ port: 7110, ports: [7111] }).ports, [7110, 7111]);
+    const fromPorts = expo({ ports: [7110, 7111] });
+    assert.deepEqual(fromPorts.ports, [7110, 7111]);
+    assert.equal(fromPorts.url, "http://localhost:7110");
   });
 
   test("default launch builds each platform using the configured Metro port", async () => {

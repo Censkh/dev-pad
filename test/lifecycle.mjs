@@ -73,6 +73,7 @@ if (process.argv[2] === "descendant") {
         {
           id: "service",
           name: "service",
+          ports: false,
           start: async () => {
             await gate;
             port = await listen(server);
@@ -114,6 +115,7 @@ if (process.argv[2] === "descendant") {
           {
             id: "service",
             name: "service",
+            ports: false,
             command: command("exit", String(code)),
             start: async () => {
               server = createServer();
@@ -154,7 +156,7 @@ if (process.argv[2] === "descendant") {
       const records = [join(directory, "first.json"), join(directory, "second.json")];
       const dashboard = createDashboard({
         title: "process groups",
-        services: [{ id: "service", name: "service", command: parentCommand(records[0], "live") }],
+        services: [{ id: "service", name: "service", ports: false, command: parentCommand(records[0], "live") }],
       });
       const ready = async (record) => {
         await waitFor(

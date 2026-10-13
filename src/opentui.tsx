@@ -227,8 +227,8 @@ export async function mountUI(
                     {cleanText(service.status)}
                   </text>
                   {!compact && (
-                    <text flexGrow={1} fg={colors.info} truncate>
-                      {cleanText(service.url)}
+                    <text flexGrow={1} fg={service.detail ? colors.warning : colors.info} truncate>
+                      {cleanText(service.detail ?? service.url)}
                     </text>
                   )}
                 </box>
@@ -308,13 +308,21 @@ export async function mountUI(
                   { key: "↑↓", label: "logs" },
                   { key: "drag", label: "copy" },
                 ]
-            ).map((action, index) => (
-              <span key={action.key}>
-                {index > 0 && <span fg={colors.muted}> · </span>}
-                <strong fg={colors.warning}>{cleanText(action.key)}</strong>
-                <span fg={colors.foreground}> {cleanText(action.label)}</span>
-              </span>
-            ))}
+            ).map((action, index) => {
+              const highlight = "highlight" in action && action.highlight;
+              return (
+                <span key={action.key}>
+                  {index > 0 && <span fg={colors.muted}> · </span>}
+                  <strong
+                    fg={highlight ? colors.background : colors.warning}
+                    bg={highlight ? colors.warning : undefined}
+                  >
+                    {highlight ? ` ${cleanText(action.key)} ` : cleanText(action.key)}
+                  </strong>
+                  <span fg={highlight ? colors.warning : colors.foreground}> {cleanText(action.label)}</span>
+                </span>
+              );
+            })}
           </text>
         </box>
       </box>

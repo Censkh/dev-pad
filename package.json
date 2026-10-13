@@ -35,7 +35,7 @@
     "prepare": "tsc",
     "check": "tsc --noEmit && biome check .",
     "check:fix": "tsc --noEmit && biome check --write .",
-    "test": "node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs",
+    "test": "node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs test/ports.mjs",
     "test:package-managers": "node --test test/package-managers.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
     "prepublishOnly": "node scripts/check-publish.mjs && npm run check && npm run build && npm test",

@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import type { Service, ServiceContext } from "./index.js";
 
 export type ExpoPlatform = "ios" | "android";
-export type ExpoOptions = Partial<Service> & {
+export type ExpoOptions = Partial<Omit<Service, "port">> & {
+  /** Metro's port. Defaults to the first of `ports`, then 8081. Always included in the service's `ports`. */
+  port?: number;
   /** Command used when Metro is not running or cannot take key input. Defaults to `bun run expo run:<platform> --port <port>`. */
   launch?: (platform: ExpoPlatform) => string[];
   /** Host ports to expose to Android devices with `adb reverse`, in addition to Metro's port. */
@@ -54,7 +56,8 @@ export function expo(options: ExpoOptions = {}): Service {
   const id = overrides.id ?? "mobile";
   const name = overrides.name ?? "Expo";
   const command = overrides.command ?? ["bun", "run", "dev"];
-  const port = overrides.port ?? 8081;
+  const { port: metroPort, ports: extraPorts, ...rest } = overrides;
+  const port = metroPort ?? (extraPorts ? extraPorts[0] : undefined) ?? 8081;
   let forwarding = false;
   let forwardingError = "";
 
@@ -77,11 +80,11 @@ export function expo(options: ExpoOptions = {}): Service {
   return {
     url: `http://localhost:${port}`,
     terminal: true,
-    ...overrides,
+    ...rest,
     id,
     name,
     command,
-    port,
+    ports: [...new Set([port, ...(extraPorts || [])])],
     actions: [
       { key: "i", label: "iOS", global: true, run: (ctx) => launch(ctx, "ios") },
       { key: "a", label: "Android", global: true, run: (ctx) => launch(ctx, "android") },

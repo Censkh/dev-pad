@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Config, runDashboard, validateConfig } from "./index.js";
@@ -7,10 +7,10 @@ import { type Config, runDashboard, validateConfig } from "./index.js";
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   console.log(
-    `dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\n\nKeys: 1–9 select service, then r start/restart, q stop, o open, Esc back.\nTop level: r restart active, c clear, ${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit.\nCustom service actions are shown in the dashboard.`,
+    `dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\n\nKeys: 1–9 select service, then r start/restart, q stop, k kill whatever listens on its ports, o open, Esc back.\nTop level: r restart active, c clear, ${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit.\nCustom service actions are shown in the dashboard.`,
   );
 } else if (args.includes("--version")) {
-  console.log("0.1.0");
+  console.log(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
 } else {
   try {
     const configIndex = args.indexOf("--config");
