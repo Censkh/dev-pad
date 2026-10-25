@@ -2,10 +2,12 @@ import { execFile } from "node:child_process";
 import { createConnection } from "node:net";
 import { resolve, sep } from "node:path";
 import { promisify, stripVTControlCharacters } from "node:util";
+import { createLogFiles, defaultLogDir, type LogFileOptions, type LogFiles } from "./logfiles.js";
 import type { LogEntry } from "./logs.js";
 import { type CommandRunner, killPortListeners, listeningPids, portListeners, servicePorts } from "./ports.js";
 import { launch, type RunningProcess, terminate } from "./process.js";
 
+export { defaultLogDir, type LogFileOptions, logFileName } from "./logfiles.js";
 export {
   type CommandRunner,
   type KillPortsResult,
@@ -62,6 +64,11 @@ export type Config = {
   tick?: (ctx: ServiceContext) => Promise<void>;
   /** Log lines kept for each source (service, supervisor or utility), so a noisy one never evicts another's history. */
   logLimit?: number;
+  /**
+   * Mirror every log source to a plain-text file under the project directory (`.dev-pad/logs` by default) while the
+   * dashboard runs, so agents and other tools can read service output. Set `false` to turn this off.
+   */
+  logFiles?: false | LogFileOptions;
 };
 export type ServiceContext = {
   start(id: string): Promise<void>;
@@ -187,6 +194,8 @@ export type DashboardOptions = {
   plain?: boolean;
   /** Runs the read-only `lsof`/`netstat` lookups for busy ports. Defaults to spawning the real utility. */
   run?: CommandRunner;
+  /** Write the config's log files. `runDashboard` and the CLI enable it; direct `createDashboard` calls default to off. */
+  logFiles?: boolean;
 };
 
 export function createDashboard(config: Config, options: DashboardOptions = {}) {
@@ -223,6 +232,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
     logView = { version: logVersion, selectedId, logs };
     return logs;
   };
+  let files: LogFiles | undefined;
   const utilities = new Set<RunningProcess>();
   let logId = 0;
   let closing = false;
@@ -249,6 +259,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
     logs.push({ id: ++logId, source, message: clean });
     if (logs.length > logLimit) logs.shift();
     logVersion++;
+    files?.write(source, clean);
     if (options.plain) process.stdout.write(`[${source}] ${clean}\n`);
   };
   const ctx: ServiceContext = {
@@ -317,6 +328,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
           s.status = "starting";
           s.active = true;
           s.cleanupNeeded = Boolean(service.stop);
+          files?.started(id, service.name);
           if (service.start) s.hasStarted = true;
           await service.start?.(ctx);
           if (closing) return;
@@ -529,23 +541,45 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
     for (const service of services) visit(service);
     return ordered.reverse();
   };
+  const serviceSnapshots = () =>
+    services.map((service) => ({
+      id: service.id,
+      name: service.name,
+      status: isBusy(service.id)
+        ? "busy"
+        : state(service.id).status === "stopped" && !state(service.id).hasStarted
+          ? "not started"
+          : state(service.id).status,
+      url: url(service),
+      ...(isBusy(service.id) ? { detail: describeHolder(isBusy(service.id) as PortHolder) } : {}),
+      items: service.status?.() ?? [],
+    }));
+  const writeIndex = (running = true) =>
+    files?.index(
+      serviceSnapshots().map((service) => ({ ...service, ports: servicePorts(serviceById(service.id)) })),
+      running,
+    );
+  if (options.logFiles && config.logFiles !== false) {
+    files = createLogFiles(resolve(cwd, config.logFiles?.dir ?? defaultLogDir), {
+      maxBytes: config.logFiles?.maxBytes,
+      title: config.title,
+      cwd,
+      sources: services.map((service) => service.id),
+      onError: (message) => {
+        files = undefined;
+        log("supervisor", message);
+      },
+    });
+    writeIndex();
+  }
   return {
     ctx,
+    /** The directory log files are written to, if they are enabled. */
+    logDir: files?.dir,
     snapshot: () => ({
       title: config.title,
       selectedId,
-      services: services.map((service) => ({
-        id: service.id,
-        name: service.name,
-        status: isBusy(service.id)
-          ? "busy"
-          : state(service.id).status === "stopped" && !state(service.id).hasStarted
-            ? "not started"
-            : state(service.id).status,
-        url: url(service),
-        ...(isBusy(service.id) ? { detail: describeHolder(isBusy(service.id) as PortHolder) } : {}),
-        items: service.status?.() ?? [],
-      })),
+      services: serviceSnapshots(),
       // A selected service narrows the log panel to that service's own output.
       logs: visibleLogs(),
       items: config.status?.() ?? [],
@@ -558,10 +592,12 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
     }),
     start: () =>
       perform("Starting services", async () => {
+        if (files) log("supervisor", `Writing logs to ${files.dir}`);
         const results = await Promise.allSettled(
           services.filter((service) => service.autostart !== false).map((service) => ctx.start(service.id)),
         );
         for (const result of results) if (result.status === "rejected") log("supervisor", String(result.reason));
+        writeIndex();
       }),
     async key(key: string) {
       if (key === "c") {
@@ -612,6 +648,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
       })()
         .catch((error) => log("supervisor", String(error)))
         .finally(() => {
+          writeIndex();
           healthTask = undefined;
         });
       return healthTask;
@@ -632,6 +669,8 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
             log("supervisor", String(error));
           }
         }
+        writeIndex(false);
+        files?.close();
         return exitCode;
       })();
       return shutdownTask;
@@ -641,7 +680,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
 
 export async function runDashboard(config: Config, options: { plain?: boolean } = {}) {
   const interactive = !options.plain && Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  const dashboard = createDashboard(config, { plain: !interactive });
+  const dashboard = createDashboard(config, { plain: !interactive, logFiles: true });
   process.title = config.title;
   if (process.stdout.isTTY) process.stdout.write(`\x1b]0;${config.title.replace(/\p{Cc}/gu, "")}\x07`);
   let unmount: (() => void) | undefined;

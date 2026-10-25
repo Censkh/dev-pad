@@ -267,6 +267,45 @@ own last 5,000 lines, so a noisy service never pushes out a quiet one's history.
 `logLimit` on the top-level config to change it. The dashboard renders only the
 lines near the visible area and loads older ones as you scroll up.
 
+### Log files
+
+While the dashboard runs, dev-pad also writes each log source to a plain-text file in
+`.dev-pad/logs` under the project directory, so coding agents, scripts and other
+terminals can read service output without the dashboard:
+
+| File | Contents |
+| --- | --- |
+| `<service-id>.log` | One service's output |
+| `supervisor.log` | dev-pad's own messages, such as starts, busy ports and errors |
+| `all.log` | Every source interleaved, in the order dev-pad received it |
+| `<source>.log` | A utility command's output, named after its `ctx.run` / `ctx.log` source |
+| `README.md` | Each service's status, URL, ports and log file, and whether dev-pad is running |
+
+Each line reads `2026-10-25T09:41:07.123Z [portal] message`, with terminal colours and
+spinner redraws removed, so `tail -n 100 .dev-pad/logs/portal.log` or `grep` work as
+expected. A service's file starts again each time the service starts, and every file
+starts again when it reaches 2 MB or a new dashboard session begins; the earlier
+contents move to `<name>.previous.log`. `all.log` marks each service start instead.
+The dashboard's own log panel is unchanged.
+
+The directory gets its own `.gitignore`, so the files stay out of version control; you
+can also add `.dev-pad/` to your project's `.gitignore`. To point agents at the files,
+add a line to your `AGENTS.md` or `CLAUDE.md`, for example: "Dev server logs are in
+`.dev-pad/logs/<service>.log`; `.dev-pad/logs/README.md` lists the services and their
+status."
+
+Configure or turn the files off with the top-level `logFiles` option:
+
+```ts
+logFiles: { dir: "tmp/logs", maxBytes: 5_000_000 }, // or `logFiles: false`
+```
+
+`dev-pad logs` prints the index, and `dev-pad logs <service> [--lines N] [--follow]`
+prints a source's last lines (100 by default) and, with `--follow`, keeps printing
+new ones until you press `Ctrl+C`. It reads the config to find the directory, so pass
+`--config` if you use one. `runDashboard` and the CLI write log files;
+`createDashboard` writes them only when you pass `{ logFiles: true }`.
+
 The CLI defaults the project directory to the config's directory; `config.cwd`
 overrides it. Direct calls to `runDashboard(config)` or `createDashboard(config)`
 default to the current working directory.
@@ -326,6 +365,7 @@ The Deno command uses `-A` for subprocess, environment, file, and network access
 | `--config path` | Load a specific config |
 | `--check` | Load and validate the config without starting services |
 | `--plain` | Print prefixed logs without the interactive UI |
+| `logs [source] [--lines N] [--follow]` | Print the index or a source's [log file](#log-files) |
 | `--help` / `--version` | Print usage or version |
 
 The CLI searches for `dev-pad.config.ts`, `.mts`, `.js`, then `.mjs` in the current
