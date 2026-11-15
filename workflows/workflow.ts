@@ -57,6 +57,19 @@ export function loadWorkflow(path: string, text = readFileSync(path, "utf8")): W
   return workflow;
 }
 
+/**
+ * A job's name without its unevaluated expressions, for a label that covers every matrix
+ * combination: "Backend Tests (${{ matrix.shard }}/5)" is "Backend Tests". An expression may hold
+ * parentheses of its own, as in `format('{0}/6', matrix.shard)`.
+ */
+export function jobLabel(job: Job, id: string): string {
+  const name = (job.name ?? id)
+    .replace(/\s*\([^()]*\$\{\{.*?\}\}[^()]*\)/g, "")
+    .replace(/\s*\$\{\{.*?\}\}/g, "")
+    .trim();
+  return name || id;
+}
+
 export function needsOf(job: Job): string[] {
   if (!job.needs) return [];
   return Array.isArray(job.needs) ? job.needs : [job.needs];

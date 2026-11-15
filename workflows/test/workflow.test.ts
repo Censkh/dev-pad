@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { expandMatrix } from "../workflow";
+import { expandMatrix, jobLabel } from "../workflow";
 
 describe("expandMatrix", () => {
   test("multiplies the axes and drops excluded combinations", () => {
@@ -47,5 +47,28 @@ describe("expandMatrix", () => {
       { name: "frontend" },
     ]);
     expect(expandMatrix(undefined)).toEqual([{}]);
+  });
+});
+
+// Job names hold the workflow's own `${{ }}` expressions, not template placeholders.
+const expression = (text: string) => `$\{{ ${text} }}`;
+
+describe("jobLabel", () => {
+  test("drops a matrix expression, even one holding parentheses of its own", () => {
+    expect(jobLabel({ name: `Backend Tests (${expression("matrix.shard")}/5)` } as never, "backend-tests")).toBe(
+      "Backend Tests",
+    );
+    expect(
+      jobLabel(
+        {
+          name: `Frontend E2E (${expression("matrix.shard == 'dev' && 'dev' || format('{0}/6', matrix.shard)")})`,
+        } as never,
+        "frontend-e2e",
+      ),
+    ).toBe("Frontend E2E");
+  });
+
+  test("falls back to the job's id when its name is only an expression", () => {
+    expect(jobLabel({ name: expression("matrix.name") } as never, "setup")).toBe("setup");
   });
 });

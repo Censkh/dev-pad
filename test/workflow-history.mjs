@@ -92,7 +92,7 @@ test("the whole workflow's entry lists partial runs no other entry claims, with 
   }
 });
 
-test("a run's options leave out the workflow file and the runner's wiring", () => {
+test("a run's options read as words, without the workflow file or the runner's wiring", () => {
   assert.equal(
     runOptions([
       ".github/workflows/deploy.yml",
@@ -115,7 +115,12 @@ test("a run's options leave out the workflow file and the runner's wiring", () =
       "--status-events",
       "--job",
       "setup",
+      "--job",
+      "cockroachdb",
+      "--matrix",
+      "name=workers",
+      "--all",
     ]),
-    "--since origin/main --no-fail-fast --ref 05d5196b7 --job setup",
+    "jobs setup, cockroachdb · only name=workers · since origin/main · every job · no fail-fast · at 05d5196b7",
   );
 });

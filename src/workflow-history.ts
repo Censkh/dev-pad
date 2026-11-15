@@ -43,14 +43,42 @@ const isAlive = (pid: number | undefined) => {
 const wiringValues = new Set(["--state", "--keychain-service", "--tool-cache", "--processor-root", "--processors"]);
 const wiringFlags = new Set(["--stream", "--status-events"]);
 
-/** A run's options as typed, from the runner's arguments (the workflow file first), without its wiring. */
+const valued = new Set(["--ref", "--branch", "--event", "--jobs", "--since", "--job", "--skip", "--matrix"]);
+
+/**
+ * A run's options in words, from the runner's arguments (the workflow file first), without its
+ * wiring: `--since origin/main --no-fail-fast --job setup --job cockroachdb` is
+ * "since origin/main · no fail-fast · jobs setup, cockroachdb".
+ */
 export function runOptions(args: readonly string[]) {
-  const shown: string[] = [];
+  const values = new Map<string, string[]>();
+  const other: string[] = [];
   for (let index = args[0]?.startsWith("-") ? 0 : 1; index < args.length; index++) {
-    if (wiringValues.has(args[index])) index++;
-    else if (!wiringFlags.has(args[index])) shown.push(args[index]);
+    const arg = args[index];
+    if (wiringValues.has(arg)) index++;
+    else if (valued.has(arg) && index + 1 < args.length) values.set(arg, [...(values.get(arg) ?? []), args[++index]]);
+    else if (!wiringFlags.has(arg)) other.push(arg);
   }
-  return shown.join(" ");
+  const list = (flag: string, one: string, many = one) => {
+    const items = values.get(flag);
+    return items ? [`${items.length > 1 ? many : one} ${items.join(", ")}`] : [];
+  };
+  const flag = (name: string, words: string) => (other.includes(name) ? [words] : []);
+  return [
+    ...flag("--deploy", "deploy"),
+    ...flag("--check", "check"),
+    ...list("--job", "job", "jobs"),
+    ...list("--skip", "skipping"),
+    ...list("--matrix", "only"),
+    ...list("--since", "since"),
+    ...flag("--all", "every job"),
+    ...flag("--no-fail-fast", "no fail-fast"),
+    ...list("--ref", "at"),
+    ...list("--branch", "as branch"),
+    ...list("--event", "as"),
+    ...list("--jobs", "parallel"),
+    ...other.filter((arg) => !["--deploy", "--check", "--all", "--no-fail-fast"].includes(arg)),
+  ].join(" · ");
 }
 
 const requestedJobs = (status: SavedStatus) =>

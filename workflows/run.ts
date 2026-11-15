@@ -76,7 +76,16 @@ import {
   type JobStatus as LiveJob,
   type RunStatus,
 } from "./status";
-import { actionName, expandMatrix, type Job, loadWorkflow, needsOf, type Step, type Workflow } from "./workflow";
+import {
+  actionName,
+  expandMatrix,
+  type Job,
+  jobLabel,
+  loadWorkflow,
+  needsOf,
+  type Step,
+  type Workflow,
+} from "./workflow";
 
 const runnerOS =
   ({ darwin: "macOS", linux: "Linux", win32: "Windows" } as Record<string, string>)[process.platform] ??
@@ -590,8 +599,6 @@ const say = (text: string) => process.stdout.write(`[${clock()}] ${text}\n`);
 // --- Live status (status.ts), for the web GUI and for runs deciding whether to supersede ----------
 
 const now = () => new Date().toISOString();
-// A matrix job's name without its unevaluated matrix part: "Backend Tests (${{ matrix.shard }}/5)".
-const jobLabel = (job: Job, id: string) => (job.name ?? id).replace(/\s*\([^)]*\$\{\{[^)]*\)/g, "").trim() || id;
 const live: RunStatus = {
   version: 1,
   id: runId,
