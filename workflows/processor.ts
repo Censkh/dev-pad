@@ -29,6 +29,12 @@ export type RunInfo = {
   toolCache: string;
   /** Installation root of the DevPad runner. */
   runnerPackage: string;
+  /**
+   * Untracked paths, relative to the workspace (such as a Cargo `target` directory), that a job's
+   * checkout keeps between runs instead of cleaning: caches for tools that invalidate their own
+   * output. From the processors module's `preserve` export; a path inside a submodule applies there.
+   */
+  preserve: string[];
 };
 
 export type StepRun = {

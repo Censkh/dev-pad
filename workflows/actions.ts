@@ -33,7 +33,25 @@ async function git(cwd: string, ...args: string[]) {
 // Submodules are cloned from their copies in the source tree, which hold the pinned commits
 // (pushed or not), so nothing is fetched from GitHub. `submodule init` keeps a URL already in
 // the config (never `submodule sync`, which resets it to .gitmodules').
-async function checkoutSubmodules(destination: string, source: string, recursive: boolean) {
+// A preserved path is plain and relative: no globs, `..`, leading slash or empty segments.
+export const isPreservablePath = (path: string) =>
+  /^[^*?[\]!#\\]+$/.test(path) && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+
+// `git clean` excludes for the preserved paths under `prefix` (a submodule's path, or "" for the
+// workspace itself), anchored there.
+function preserved(paths: readonly string[], prefix: string): string[] {
+  return paths.flatMap((path) =>
+    !prefix ? ["-e", `/${path}`] : path.startsWith(`${prefix}/`) ? ["-e", `/${path.slice(prefix.length + 1)}`] : [],
+  );
+}
+
+async function checkoutSubmodules(
+  destination: string,
+  source: string,
+  recursive: boolean,
+  preserve: readonly string[],
+  prefix = "",
+) {
   if (!existsSync(join(destination, ".gitmodules"))) return;
   const entries = (await git(destination, "config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"))
     .split("\n")
@@ -50,8 +68,9 @@ async function checkoutSubmodules(destination: string, source: string, recursive
   }
   await git(destination, "submodule", "--quiet", "update", "--init", "--force");
   for (const { path } of entries) {
-    await git(join(destination, path), "clean", "-ffdxq", "-e", "node_modules");
-    if (recursive) await checkoutSubmodules(join(destination, path), join(source, path), true);
+    const within = prefix ? `${prefix}/${path}` : path;
+    await git(join(destination, path), "clean", "-ffdxq", "-e", "node_modules", ...preserved(preserve, within));
+    if (recursive) await checkoutSubmodules(join(destination, path), join(source, path), true, preserve, within);
   }
 }
 
@@ -71,10 +90,11 @@ const checkout: Action = {
         step.workspace,
       );
     await git(step.workspace, "checkout", "--quiet", "--force", "--detach", step.run.sha);
-    await git(step.workspace, "clean", "-ffdxq", "-e", "node_modules");
+    const preserve = step.run.preserve;
+    await git(step.workspace, "clean", "-ffdxq", "-e", "node_modules", ...preserved(preserve, ""));
     const submodules = step.input("submodules");
     if (submodules === "true" || submodules === "recursive")
-      await checkoutSubmodules(step.workspace, step.run.source, submodules === "recursive");
+      await checkoutSubmodules(step.workspace, step.run.source, submodules === "recursive", preserve);
     else if (submodules && submodules !== "false") throw new StepFailure(`submodules: ${submodules} is not supported`);
     step.log(`Checked out ${step.run.sha.slice(0, 9)} in ${step.workspace}`);
   },

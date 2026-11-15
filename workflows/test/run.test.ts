@@ -355,6 +355,86 @@ test.skipIf(!canRun)(
   },
 );
 
+test.skipIf(!canRun)(
+  "a checkout keeps the preserved untracked paths between runs, in the workspace and its submodules, and cleans the rest",
+  () => {
+    const root = join(dir, "preserve");
+    const source = join(root, "repo");
+    const stateDir = join(root, "state");
+    const lib = join(root, "lib");
+    mkdirSync(lib, { recursive: true });
+    writeFileSync(join(lib, "README"), "lib");
+    git(lib, "init", "-q", "-b", "main");
+    git(lib, "add", ".");
+    git(lib, "commit", "-qm", "lib");
+    mkdirSync(join(source, ".github/workflows"), { recursive: true });
+    writeFileSync(
+      join(source, ".github/workflows/cache.yml"),
+      "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v6\n        with:\n          submodules: true\n      - name: Build\n",
+    );
+    git(source, "init", "-q", "-b", "main");
+    git(source, "submodule", "--quiet", "add", lib, "lib");
+    git(source, "add", ".");
+    git(source, "commit", "-qm", "cache");
+    const seen = join(root, "seen.txt");
+    // Records which outputs an earlier run left, then leaves all of them again.
+    writeFileSync(
+      join(root, "cache.ts"),
+      `import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const outputs = ["target/out", "scratch/out", "lib/target/out", "lib/scratch/out"];
+export const preserve = ["target", "lib/target"];
+export const processors = {
+  async Build(step) {
+    appendFileSync(${JSON.stringify(seen)}, outputs.filter((path) => existsSync(join(step.workspace, path))).join(",") + "\\n");
+    for (const path of outputs) {
+      mkdirSync(join(step.workspace, path, ".."), { recursive: true });
+      writeFileSync(join(step.workspace, path), "built");
+    }
+  },
+};
+`,
+    );
+    const run = () =>
+      Bun.spawnSync(
+        [
+          "bun",
+          runner,
+          join(source, ".github/workflows/cache.yml"),
+          "--processors",
+          join(root, "cache.ts"),
+          "--state",
+          stateDir,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+    expect(run().exitCode).toBe(0);
+    expect(run().exitCode).toBe(0);
+    expect(
+      readFileSync(seen, "utf8")
+        .split("\n")
+        .filter((line, index) => line || index === 0),
+    ).toEqual(["", "target/out,lib/target/out"]);
+  },
+  60_000,
+);
+
+test.skipIf(!canRun)("--check rejects a preserved path that isn't a plain path inside the workspace", () => {
+  writeFileSync(
+    join(dir, "bad-preserve.ts"),
+    `export const preserve = ["../outside", "target/*"];
+export const processors = {};`,
+  );
+  const result = Bun.spawnSync(
+    ["bun", runner, "--check", join(repo, ".github/workflows/fast.yml"), "--processors", join(dir, "bad-preserve.ts")],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const errors = result.stderr.toString();
+  expect(result.exitCode).toBe(1);
+  expect(errors).toContain("preserved path '../outside'");
+  expect(errors).toContain("preserved path 'target/*'");
+});
+
 type Live = { id: string; state: string; supersededBy?: string; waitingFor?: { run: string } };
 async function until<T>(read: () => T | undefined, timeout = 30_000): Promise<T> {
   const deadline = Date.now() + timeout;

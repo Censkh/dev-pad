@@ -52,7 +52,7 @@ import {
 } from "node:fs";
 import { availableParallelism, homedir, totalmem } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { actionProcessor, actions } from "./actions";
+import { actionProcessor, actions, isPreservablePath } from "./actions";
 import {
   condition,
   type ExpressionContext,
@@ -99,6 +99,8 @@ type Loaded = {
   optionalSecrets: Set<string>;
   // Groups of job ids whose matrix combinations never run at the same time (shared ports).
   exclusive: string[][];
+  // Untracked paths a job's checkout keeps between runs, as caches (RunInfo.preserve).
+  preserve: string[];
 };
 
 /**
@@ -146,6 +148,7 @@ async function load(
         exclusive?: string[][];
         deployJobs?: string[];
         optionalSecrets?: string[];
+        preserve?: string[];
       })
     : {};
   const processors: Processors = imported.processors ?? {};
@@ -166,6 +169,7 @@ async function load(
     processors,
     deployJobs: imported.deployJobs ?? [],
     optionalSecrets: new Set(imported.optionalSecrets ?? []),
+    preserve: imported.preserve ?? [],
   };
 }
 
@@ -317,6 +321,9 @@ function check(loaded: Loaded, selected: Set<string>, partial = false): string[]
       if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: exclusive job '${id}' doesn't exist`);
   for (const id of loaded.deployJobs)
     if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: deploy job '${id}' doesn't exist`);
+  for (const path of loaded.preserve)
+    if (!isPreservablePath(path))
+      errors.push(`${loaded.file}: preserved path '${path}' isn't a plain path inside the workspace`);
   return errors;
 }
 
@@ -457,6 +464,7 @@ const runInfo: RunInfo = {
   artifacts: artifactsDir,
   toolCache,
   runnerPackage: resolve(import.meta.dir, ".."),
+  preserve: loaded.preserve,
 };
 
 const github = {
