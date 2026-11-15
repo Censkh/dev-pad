@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { localWorkflowRuns } from "../dist/workflow-history.js";
+import { localWorkflowRuns, runOptions } from "../dist/workflow-history.js";
 
 test("local runs include a run still going from the command line, but not one whose runner died", async () => {
   const repository = await mkdtemp(join(tmpdir(), "dev-pad-history-"));
@@ -90,4 +90,32 @@ test("the whole workflow's entry lists partial runs no other entry claims, with 
   } finally {
     await rm(repository, { recursive: true, force: true });
   }
+});
+
+test("a run's options leave out the workflow file and the runner's wiring", () => {
+  assert.equal(
+    runOptions([
+      ".github/workflows/deploy.yml",
+      "--since",
+      "origin/main",
+      "--no-fail-fast",
+      "--ref",
+      "05d5196b7",
+      "--state",
+      "/repo/.local/workflows",
+      "--keychain-service",
+      "service",
+      "--tool-cache",
+      "/cache",
+      "--processor-root",
+      "/repo/processors",
+      "--processors",
+      "processors.ts",
+      "--stream",
+      "--status-events",
+      "--job",
+      "setup",
+    ]),
+    "--since origin/main --no-fail-fast --ref 05d5196b7 --job setup",
+  );
 });

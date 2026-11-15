@@ -19,7 +19,7 @@ import type { LogEntry } from "./logs.js";
 import { type CommandRunner, killPortListeners, listeningPids, portListeners, servicePorts } from "./ports.js";
 import { launch, type RunningProcess, terminate } from "./process.js";
 import type { Snapshot, WorkflowJob } from "./ui.js";
-import { localWorkflowRuns, localWorkflowRunsStamp, readWorkflowLog } from "./workflow-history.js";
+import { localWorkflowRuns, localWorkflowRunsStamp, readWorkflowLog, runOptions } from "./workflow-history.js";
 
 export { defaultLogDir, type LogFileOptions, logFileName } from "./logfiles.js";
 export {
@@ -133,7 +133,7 @@ export function defineConfig(config: Config): Config {
 
 type RunDetails = { state: string; jobs: WorkflowJob[]; stages: string[] };
 type SavedWorkflow = Awaited<ReturnType<typeof localWorkflowRuns>>[number];
-type WorkflowRun = { id: string; startedAt: number; status: string; label: string } & (
+type WorkflowRun = { id: string; startedAt: number; status: string; label: string; options?: string } & (
   | { source: "live" }
   | { source: "local"; saved: SavedWorkflow }
   | { source: "github"; remote: GitHubRun }
@@ -318,6 +318,8 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
     generation: number;
     workflowRun?: RunDetails & { id?: string; startedAt?: string };
     localStartedAt?: string;
+    /** The options DevPad started its own run with. */
+    localOptions?: string;
     localRunOrder?: number;
     localRuns?: SavedWorkflow[];
     /** The newest saved run directories when the runs were last read (localWorkflowRunsStamp). */
@@ -431,6 +433,8 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
             s.workflowRun = undefined;
             s.localRunOrder = runOrder;
             s.localStartedAt = new Date().toISOString();
+            // The command is `bun <runner> <workflow> ...`.
+            s.localOptions = runOptions(command.slice(2));
             s.selectedRunId = undefined;
             logsBySource.delete(id);
             if (selectedId === id) syncSelectedRun(service);
@@ -631,6 +635,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         startedAt: Date.parse(liveStartedAt) || 0,
         status: s.status === "running" ? (s.workflowRun?.state ?? "running") : s.status,
         label: `Local · ${liveStartedAt.slice(0, 16).replace("T", " ")}`,
+        options: s.localOptions,
         source: "live",
       });
     }
@@ -642,6 +647,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         startedAt: Date.parse(saved.startedAt) || 0,
         status: saved.state,
         label: `Local · ${saved.startedAt.slice(0, 16).replace("T", " ")}${saved.partial ? ` · ${saved.partial.join(", ")}` : ""}${saved.waitingFor ? ` · waiting for ${waitingLabel(saved.waitingFor)}` : ""}`,
+        options: saved.options,
         source: "local",
         saved,
       });
@@ -1171,6 +1177,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         workflowMessage: workflowView ? s?.githubNotice || githubMessage : undefined,
         workflowRuns: runs.map(({ id, label, status }) => ({ id, label, status })),
         workflowRunId: run?.id,
+        workflowRunOptions: run?.options || undefined,
         workflowSummary: workflowSummary(),
         workflowJobs: s && run ? runDetails(s, run)?.jobs : undefined,
         services: serviceSnapshots(),

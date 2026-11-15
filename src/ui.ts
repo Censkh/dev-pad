@@ -11,6 +11,8 @@ export type Snapshot = {
   workflowMessage?: string;
   workflowRuns?: { id: string; label: string; status: string }[];
   workflowRunId?: string;
+  /** The options the selected run was started with. */
+  workflowRunOptions?: string;
   hasWorkflows?: boolean;
   workflowJobs?: WorkflowJob[];
   workflowSummary?: { status: string; stages: string[] };
@@ -240,7 +242,10 @@ export async function mountUI(
     const footer = footerActions(snapshot, Math.max(0, width - 1), chip?.cells ?? 0);
     if (run) {
       const indicator = run.status === "running" ? `${statusAppearance(run.status, pulse).marker} ` : "";
-      line(` ←→ Runs · ${run.label} · ${indicator}${run.status}`, "info");
+      line(
+        ` ←→ Runs · ${run.label} · ${indicator}${run.status}${snapshot.workflowRunOptions ? ` · ${snapshot.workflowRunOptions}` : ""}`,
+        "info",
+      );
     }
     const budget = Math.max(0, height - 7 - footer.rows.length - Number(Boolean(run)));
     const detailCount =

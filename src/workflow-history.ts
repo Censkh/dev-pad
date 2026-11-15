@@ -38,6 +38,21 @@ const isAlive = (pid: number | undefined) => {
   }
 };
 
+// Runner arguments that only say where a run keeps its state, secrets, tools and processors, or
+// how it reports to DevPad: the rest are the options that decide what it runs and how.
+const wiringValues = new Set(["--state", "--keychain-service", "--tool-cache", "--processor-root", "--processors"]);
+const wiringFlags = new Set(["--stream", "--status-events"]);
+
+/** A run's options as typed, from the runner's arguments (the workflow file first), without its wiring. */
+export function runOptions(args: readonly string[]) {
+  const shown: string[] = [];
+  for (let index = args[0]?.startsWith("-") ? 0 : 1; index < args.length; index++) {
+    if (wiringValues.has(args[index])) index++;
+    else if (!wiringFlags.has(args[index])) shown.push(args[index]);
+  }
+  return shown.join(" ");
+}
+
 const requestedJobs = (status: SavedStatus) =>
   new Set(status.args.flatMap((arg, index, args) => (arg === "--job" ? args.slice(index + 1, index + 2) : [])));
 const sameJobs = (requested: Set<string>, configured: readonly string[]) =>
@@ -141,6 +156,8 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entr
         id: status.id,
         /** The jobs a partial run was limited to, when they aren't this entry's own. */
         partial,
+        /** The options the run was started with, such as `--since origin/main --no-fail-fast`. */
+        options: runOptions(status.args),
         branch: status.branch,
         startedAt: status.startedAt,
         state: status.state,

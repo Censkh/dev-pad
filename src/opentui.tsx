@@ -436,7 +436,11 @@ export async function mountUI(
             </scrollbox>
             <box flexGrow={1} minWidth={0} minHeight={0} flexDirection="column" gap={panelGap}>
               <scrollbox
-                title=" Run graph "
+                title={
+                  snapshot.workflowRunOptions
+                    ? ` Run graph · ${cleanText(snapshot.workflowRunOptions)} `
+                    : " Run graph "
+                }
                 titleColor={colors.primary}
                 border
                 borderStyle="rounded"
