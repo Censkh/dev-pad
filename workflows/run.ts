@@ -35,10 +35,13 @@
 //                    action input is implemented and that no processor is left over; run nothing.
 //
 // State lives in .local/workflows/<repository>/<workflow>/<branch>/:
-// workspaces/<job> (kept between runs, so dependencies stay installed), runs/<time>-<sha>/ (a log
-// per job, artifacts, summary.txt) and last-success.json, written after a complete --deploy run.
+// workspaces/<job> (kept between runs, so dependencies stay installed; <job>.2 and on when runs
+// going at once need the same job's workspace), runs/<time>-<sha>/ (a log per job, artifacts,
+// summary.txt) and last-success.json, written after a complete --deploy run. Runs of the same
+// workflow and branch go side by side; only runs with --deploy take turns.
 //
 // Secrets come from the environment or the macOS Keychain service configured with --keychain-service.
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -63,6 +66,7 @@ import {
   UnknownContextError,
   type Value,
 } from "./expressions";
+import { alive, type Lease, leaseHolder, tryLease } from "./leases";
 import { MachineSlots } from "./machine-slots";
 import { PortReservations } from "./ports";
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
@@ -86,6 +90,7 @@ import {
   type Step,
   type Workflow,
 } from "./workflow";
+import { leaseWorkspace } from "./workspaces";
 
 const runnerOS =
   ({ darwin: "macOS", linux: "Linux", win32: "Windows" } as Record<string, string>)[process.platform] ??
@@ -702,7 +707,7 @@ writeStatusNow();
 type CombinationResult = { ok: boolean; outputs: Record<string, string> };
 
 // Ports the steps of running combinations asked for (StepRun.openPorts).
-const ports = new PortReservations();
+const ports = new PortReservations(join(toolCache, "ports"));
 
 async function runCombination(
   state: JobState,
@@ -721,13 +726,15 @@ async function runCombination(
   };
   const jobContexts = { ...baseContexts, needs, matrix, strategy, env: workflowEnv } as Record<string, Value>;
   const name = interpolate(job.name ?? id, { contexts: jobContexts });
-  // A workspace per combination, so a matrix's combinations run side by side.
-  const workspace = join(stateDir, "workspaces", key);
-  mkdirSync(workspace, { recursive: true });
+  // A workspace per combination, so a matrix's combinations run side by side, leased from its
+  // pool so runs going at once never share one (workspaces.ts); the first free one is the most
+  // used, so its dependencies and caches are the warmest.
+  const { path: workspace, lease: workspaceLease } = leaseWorkspace(join(stateDir, "workspaces"), key, runId);
+  // A runner killed mid-job may have left processes behind in it.
+  if (workspaceLease.reclaimed) await reapWorkspace(workspace);
   // Its last use, for pruning.
   utimesSync(workspace, new Date(), new Date());
   const temp = join(runDir, "tmp", key);
-  mkdirSync(workspace, { recursive: true });
   mkdirSync(temp, { recursive: true });
 
   const logPath = join(runDir, `${key}.log`);
@@ -967,6 +974,7 @@ async function runCombination(
   if (liveLine) process.stdout.write(`[${key}] ${liveLine}\n`);
   await log.end();
   await reapWorkspace(workspace);
+  workspaceLease.release();
   ports.release(key);
   const causedStop = stoppedBy?.job === id && failed;
   Object.assign(combo, {
@@ -1097,108 +1105,110 @@ async function runJob(state: JobState): Promise<void> {
   if (state.result === "cancelled" && stoppedBy) state.note = `stopped: ${stoppedBy.label} failed`;
 }
 
-// --- Taking turns -------------------------------------------------------------------------------
-// One run at a time per workflow and branch: they share the job workspaces. A new run replaces
-// the one running when it does everything that one would (decideSupersession) and that one
-// isn't deploying; otherwise it waits for it.
-const lockPath = join(stateDir, "lock");
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
+// --- Runs going at once ------------------------------------------------------------------------
+// Runs of the same workflow and branch go side by side: each job combination leases a workspace of
+// its own (workspaces.ts), exclusive groups and ports are leased across runs, and the machine's job
+// slots (machine-slots.ts) keep everything running within what the machine can take. A new run
+// stops every earlier live run whose work it does all of (decideSupersession) unless that one is
+// deploying; runs with --deploy take turns for the branch's deploy lease.
 const isAncestorCommit = (ancestor: string, descendant: string) =>
   Bun.spawnSync(["git", "merge-base", "--is-ancestor", ancestor, descendant], {
     cwd: loaded.repositoryRoot,
   }).exitCode === 0;
-let signalled: string | undefined;
-let lastWait = "";
-for (;;) {
-  if (cancelled) {
-    live.state = "cancelled";
-    live.finishedAt = now();
-    writeStatusNow();
-    process.exit(130);
-  }
+const readStatus = (dir: string): RunStatus | undefined => {
   try {
-    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, run: runDir }), { flag: "wx" });
-    break;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-  }
-  let holder: { pid: number; run?: string };
-  try {
-    const text = readFileSync(lockPath, "utf8");
-    holder = text.trim().startsWith("{") ? JSON.parse(text) : { pid: Number(text) };
+    return JSON.parse(readFileSync(join(dir, "status.json"), "utf8")) as RunStatus;
   } catch {
-    continue;
+    return undefined;
   }
-  if (!alive(holder.pid)) {
-    rmSync(lockPath, { force: true });
-    continue;
-  }
-  let older: RunStatus | undefined;
-  try {
-    if (holder.run) older = JSON.parse(readFileSync(join(holder.run, "status.json"), "utf8"));
-  } catch {}
-  let reason: string;
-  if (!older) {
-    reason = "what it runs is unknown (it has no live status)";
-  } else if (isDeploying(older)) {
-    reason = "it is deploying";
-  } else {
-    const decision = decideSupersession(live.config, older.config, isAncestorCommit);
-    if (decision.supersedes) {
-      if (signalled !== older.id) {
-        signalled = older.id;
-        writeFileSync(join(holder.run!, "superseded-by"), runId);
-        process.kill(holder.pid, "SIGINT");
-        say(`Superseding ${older.id}: this run does everything it would`);
-      }
-      reason = "it is stopping, superseded by this run";
-    } else {
-      reason = decision.reason;
-    }
-  }
-  const run = older?.id ?? `pid ${holder.pid}`;
-  if (`${run} ${reason}` !== lastWait) {
-    lastWait = `${run} ${reason}`;
-    say(`Waiting for ${run}: ${reason}`);
-    live.waitingFor = { run, reason };
-    writeStatusNow();
-  }
-  await Bun.sleep(2000);
+};
+// Runs started before this one (run directories are named by their start time) and still going.
+function earlierLiveRuns() {
+  const runsDir = join(stateDir, "runs");
+  return readdirSync(runsDir)
+    .filter((name) => name < runId)
+    .flatMap((name) => {
+      const status = readStatus(join(runsDir, name));
+      return status && (status.state === "queued" || status.state === "running") && alive(status.pid)
+        ? [{ dir: join(runsDir, name), status }]
+        : [];
+    });
 }
-process.on("exit", () => {
-  try {
-    if (JSON.parse(readFileSync(lockPath, "utf8")).pid === process.pid) rmSync(lockPath);
-  } catch {}
-});
+const signalled = new Set<string>();
+function supersedeEarlierRuns() {
+  for (const { dir, status } of earlierLiveRuns()) {
+    if (signalled.has(status.id) || isDeploying(status)) continue;
+    if (!decideSupersession(live.config, status.config, isAncestorCommit).supersedes) continue;
+    signalled.add(status.id);
+    writeFileSync(join(dir, "superseded-by"), runId);
+    process.kill(status.pid, "SIGINT");
+    say(`Superseding ${status.id}: this run does everything it would`);
+  }
+}
+supersedeEarlierRuns();
+if (deploy) {
+  const deployLease = join(stateDir, "deploy.lease");
+  let lastWait = "";
+  for (;;) {
+    if (cancelled) {
+      live.state = "cancelled";
+      live.finishedAt = now();
+      writeStatusNow();
+      process.exit(130);
+    }
+    if (tryLease(deployLease, runDir)) break;
+    const holder = leaseHolder(deployLease);
+    const older = holder && readStatus(holder.owner);
+    supersedeEarlierRuns();
+    const decision = older && decideSupersession(live.config, older.config, isAncestorCommit);
+    const reason = !older
+      ? "what it runs is unknown (it has no live status)"
+      : isDeploying(older)
+        ? "it is deploying"
+        : signalled.has(older.id)
+          ? "it is stopping, superseded by this run"
+          : decision && !decision.supersedes
+            ? decision.reason
+            : "runs with --deploy take turns";
+    const run = older?.id ?? (holder ? `pid ${holder.pid}` : "another run");
+    if (`${run} ${reason}` !== lastWait) {
+      lastWait = `${run} ${reason}`;
+      say(`Waiting for ${run}: ${reason}`);
+      live.waitingFor = { run, reason };
+      writeStatusNow();
+    }
+    await Bun.sleep(2000);
+  }
+}
 live.state = "running";
 live.waitingFor = undefined;
 writeStatusNow();
 
-// With the lock held, nothing pruned is in use (prune.ts): the last 20 runs stay, the last 5 with
-// their artifacts. Idle workspaces and other branches' state are removed after a week.
+// One run prunes at a time, and never removes a live run or a workspace another run holds
+// (prune.ts): the last 20 runs stay, the last 5 with their artifacts. Idle workspaces and other
+// branches' state are removed after a week, the extra workspaces runs going at once needed after a
+// day.
 {
-  const removed = pruneState({
-    stateDir,
-    keepRuns: 20,
-    keepArtifacts: 5,
-    maxIdleDays: 7,
-    keep: [runId],
-  });
-  const counts = [
-    [removed.runs.length, "old run"],
-    [removed.artifacts.length, "run's artifacts"],
-    [removed.workspaces.length, "idle workspace"],
-    [removed.branches.length, "idle branch"],
-  ].filter(([count]) => (count as number) > 0);
-  if (counts.length)
-    say(`Pruned ${counts.map(([count, what]) => `${count} ${what}${count === 1 ? "" : "s"}`).join(", ")}`);
+  const pruning = tryLease(join(stateDir, "prune.lease"), runId);
+  if (pruning) {
+    const removed = pruneState({
+      stateDir,
+      keepRuns: 20,
+      keepArtifacts: 5,
+      maxIdleDays: 7,
+      maxIdleExtraDays: 1,
+      keep: [runId],
+    });
+    pruning.release();
+    const counts = [
+      [removed.runs.length, "old run"],
+      [removed.artifacts.length, "run's artifacts"],
+      [removed.workspaces.length, "idle workspace"],
+      [removed.branches.length, "idle branch"],
+    ].filter(([count]) => (count as number) > 0);
+    if (counts.length)
+      say(`Pruned ${counts.map(([count, what]) => `${count} ${what}${count === 1 ? "" : "s"}`).join(", ")}`);
+  }
 }
 
 // --- Slots --------------------------------------------------------------------------------------
@@ -1223,35 +1233,71 @@ const machineSlots = new MachineSlots(machineSlotsDir, machineJobs);
 // to size their own parallelism (test workers, containers) instead of assuming the whole machine.
 const jobCpus = Math.max(1, Math.floor(availableParallelism() / machineJobs));
 let freeSlots = slots;
-const busyGroups = new Set<number>();
-let waiters: (Waiter & { start: () => void })[] = [];
+// An exclusive group is a lease shared by every run of this workflow on the machine, whatever its
+// branch or state directory, since what it protects (fixed ports) is the machine's.
+const groupLeasePath = (group: string[]) =>
+  join(
+    toolCache,
+    "exclusive",
+    `${createHash("sha256")
+      .update(JSON.stringify([loaded.slug, loaded.file, [...group].sort()]))
+      .digest("hex")
+      .slice(0, 24)}.lease`,
+  );
+// Every group's lease, or none: a combination waiting for one held elsewhere doesn't hold the others.
+function leaseGroups(groups: string[][], owner: string) {
+  const taken: Lease[] = [];
+  for (const group of groups) {
+    const lease = tryLease(groupLeasePath(group), owner);
+    if (!lease) {
+      for (const held of taken) held.release();
+      return undefined;
+    }
+    taken.push(lease);
+  }
+  return taken;
+}
+type Waiting = Waiter & { owner: string; exclusive: string[][]; start: (leases: Lease[]) => void };
+let waiters: Waiting[] = [];
+let retry: ReturnType<typeof setTimeout> | undefined;
 function startWaiters() {
   waiters = startOrder(waiters);
+  let blocked = false;
   for (let i = 0; i < waiters.length && freeSlots > 0; ) {
     const waiter = waiters[i]!;
-    if (waiter.groups.some((group) => busyGroups.has(group))) {
+    // A group this run or another holds: the next waiter may go instead.
+    const leases = leaseGroups(waiter.exclusive, waiter.owner);
+    if (!leases) {
+      blocked = true;
       i++;
       continue;
     }
     waiters.splice(i, 1);
     freeSlots--;
-    for (const group of waiter.groups) busyGroups.add(group);
-    waiter.start();
+    waiter.start(leases);
   }
+  // Another run frees a group without telling this one, so look again soon.
+  if (blocked && !retry)
+    retry = setTimeout(() => {
+      retry = undefined;
+      startWaiters();
+    }, 1000);
 }
 async function withSlot(jobId: string, seconds: number, chain: number, work: () => Promise<void>) {
-  const groups = loaded.exclusive.flatMap((group, index) => (group.includes(jobId) ? [index] : []));
-  await new Promise<void>((start) => {
-    waiters.push({ seconds, chain, groups, start });
+  const exclusive = loaded.exclusive.filter((group) => group.includes(jobId));
+  const groups = exclusive.map((_, index) => index);
+  const owner = `${runId}/${jobId}`;
+  const leases = await new Promise<Lease[]>((start) => {
+    waiters.push({ seconds, chain, groups, owner, exclusive, start });
     startWaiters();
   });
-  const release = await machineSlots.acquire(`${runId}/${jobId}`, () => cancelled);
+  const release = await machineSlots.acquire(owner, () => cancelled);
   try {
     if (release) await work();
   } finally {
     release?.();
     freeSlots++;
-    for (const group of groups) busyGroups.delete(group);
+    for (const lease of leases) lease.release();
     startWaiters();
   }
 }

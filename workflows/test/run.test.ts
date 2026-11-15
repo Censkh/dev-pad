@@ -153,9 +153,12 @@ export const processors = {
 };
 `;
 const turnsProcessors = `
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+export const exclusive = process.env.EXCLUSIVE ? [["slow"]] : [];
 export const processors = {
   async Hold(step) {
+    // Which workspace this run's Hold has, by runner.
+    writeFileSync(process.env.RELEASE + ".workspace-" + process.pid, step.workspace);
     while (!existsSync(process.env.RELEASE)) {
       if (step.signal.aborted) throw new Error("cancelled");
       await Bun.sleep(100);
@@ -446,8 +449,8 @@ async function until<T>(read: () => T | undefined, timeout = 30_000): Promise<T>
   }
 }
 
-describe.skipIf(!canRun)("taking turns", () => {
-  const start = (stateDir: string, release: string, ...extra: string[]) =>
+describe.skipIf(!canRun)("runs going at once", () => {
+  const start = (stateDir: string, release: string, extra: string[] = [], exclusive = false) =>
     Bun.spawn(
       [
         "bun",
@@ -457,9 +460,16 @@ describe.skipIf(!canRun)("taking turns", () => {
         join(dir, "turns.ts"),
         "--state",
         stateDir,
+        // Machine slots, exclusive groups and ports of their own, not the machine's real ones.
+        "--tool-cache",
+        join(release, "..", `${release.split("/").pop()}-tools`),
         ...extra,
       ],
-      { stdout: "ignore", stderr: "ignore", env: { ...process.env, RELEASE: release } },
+      {
+        stdout: "ignore",
+        stderr: "ignore",
+        env: { ...process.env, RELEASE: release, EXCLUSIVE: exclusive ? "1" : "" },
+      },
     );
   // The run's own live status, once it has written one in the given state.
   const statuses = (stateDir: string): Live[] => {
@@ -475,22 +485,31 @@ describe.skipIf(!canRun)("taking turns", () => {
         }
       });
   };
-  const holding = (stateDir: string) => {
-    const [first] = statuses(stateDir);
-    const status = first as unknown as {
-      jobs?: { id: string; combinations: { steps: { name: string; state: string }[] }[] }[];
-    };
-    const hold = status?.jobs
-      ?.find((job) => job.id === "slow")
-      ?.combinations[0]?.steps.find((step) => step.name === "Hold");
-    return hold?.state === "running" ? first : undefined;
+  const slowCombination = (status: Live | undefined) =>
+    (
+      status as unknown as {
+        jobs?: {
+          id: string;
+          combinations: { startedAt?: string; finishedAt?: string; steps: { name: string; state: string }[] }[];
+        }[];
+      }
+    )?.jobs?.find((job) => job.id === "slow")?.combinations[0];
+  const holding = (status: Live | undefined) =>
+    slowCombination(status)?.steps.find((step) => step.name === "Hold")?.state === "running";
+  const holdingRuns = (stateDir: string) => {
+    const held = statuses(stateDir).filter(holding);
+    return held.length ? held : undefined;
   };
+  const workspaces = (release: string) =>
+    readdirSync(join(release, ".."))
+      .filter((name) => name.startsWith(`${release.split("/").pop()}.workspace-`))
+      .map((name) => readFileSync(join(release, "..", name), "utf8"));
 
   test("a run that does everything an earlier one would cancels it", async () => {
     const stateDir = join(dir, "turns-supersede");
     const release = join(dir, "release-supersede");
     const older = start(stateDir, release);
-    const first = await until(() => holding(stateDir));
+    const [first] = await until(() => holdingRuns(stateDir));
     const newer = start(stateDir, release);
     await older.exited;
     writeFileSync(release, "");
@@ -502,12 +521,61 @@ describe.skipIf(!canRun)("taking turns", () => {
     expect(newerStatus.state).toBe("passed");
   }, 60_000);
 
-  test("a run that does less waits for the earlier one instead", async () => {
-    const stateDir = join(dir, "turns-queue");
-    const release = join(dir, "release-queue");
+  test("a run that does less goes alongside the earlier one, in a workspace of its own", async () => {
+    const stateDir = join(dir, "turns-alongside");
+    const release = join(dir, "release-alongside");
     const older = start(stateDir, release);
-    const first = await until(() => holding(stateDir));
-    const newer = start(stateDir, release, "--job", "quick");
+    await until(() => holdingRuns(stateDir));
+    // Without quick, so it doesn't cover the earlier run's work.
+    const newer = start(stateDir, release, ["--job", "slow"]);
+    // Both hold at once.
+    const both = await until(() => {
+      const held = holdingRuns(stateDir);
+      return held && held.length === 2 ? held : undefined;
+    });
+    expect(both.map((status) => status.state)).toEqual(["running", "running"]);
+    expect(workspaces(release).sort()).toEqual([
+      join(stateDir, "probe/turns/main/workspaces/slow"),
+      join(stateDir, "probe/turns/main/workspaces/slow.2"),
+    ]);
+    writeFileSync(release, "");
+    await Promise.all([older.exited, newer.exited]);
+    expect(statuses(stateDir).map((status) => status.state)).toEqual(["passed", "passed"]);
+    // Neither workspace is held once its run is over.
+    expect(
+      readdirSync(join(stateDir, "probe/turns/main/workspaces")).filter((name) => name.endsWith(".lease")),
+    ).toEqual([]);
+  }, 60_000);
+
+  test("an exclusive group holds across runs, even with state of their own", async () => {
+    const release = join(dir, "release-exclusive");
+    const olderState = join(dir, "turns-exclusive-a");
+    const newerState = join(dir, "turns-exclusive-b");
+    const older = start(olderState, release, [], true);
+    await until(() => holdingRuns(olderState));
+    const newer = start(newerState, release, [], true);
+    // The newer run gets going (its quick job passes) but its slow job waits for the group.
+    await until(() =>
+      statuses(newerState)
+        .flatMap((status) => (status as unknown as { jobs: { id: string; state: string }[] }).jobs ?? [])
+        .find((job) => job.id === "quick" && job.state === "success"),
+    );
+    await Bun.sleep(1500);
+    expect(slowCombination(statuses(newerState)[0])).toBeUndefined();
+    writeFileSync(release, "");
+    await Promise.all([older.exited, newer.exited]);
+    const olderSlow = slowCombination(statuses(olderState)[0])!;
+    const newerSlow = slowCombination(statuses(newerState)[0])!;
+    expect(statuses(newerState)[0].state).toBe("passed");
+    expect(Date.parse(newerSlow.startedAt!)).toBeGreaterThanOrEqual(Date.parse(olderSlow.finishedAt!));
+  }, 60_000);
+
+  test("runs with --deploy take turns", async () => {
+    const stateDir = join(dir, "turns-deploy");
+    const release = join(dir, "release-deploy");
+    const older = start(stateDir, release, ["--deploy"]);
+    const [first] = await until(() => holdingRuns(stateDir));
+    const newer = start(stateDir, release, ["--deploy", "--job", "quick"]);
     const waiting = await until(() =>
       // A run is queued before it records what it waits for.
       statuses(stateDir).find((status) => status.state === "queued" && status.waitingFor),

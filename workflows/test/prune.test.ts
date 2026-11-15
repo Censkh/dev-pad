@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tryLease } from "../leases";
 import { pruneCacheEntries, pruneState } from "../prune";
+import { workspaceLeasePath } from "../workspaces";
 
 const DAY = 24 * 60 * 60 * 1000;
 const now = Date.parse("2026-11-15T12:00:00Z");
@@ -73,6 +75,22 @@ test("removes workspaces idle for longer than the limit", () => {
   const removed = pruneState({ stateDir, keepRuns: 20, keepArtifacts: 5, maxIdleDays: 7, now });
   expect(removed.workspaces).toEqual(["idle"]);
   expect(readdirSync(join(stateDir, "workspaces"))).toEqual(["used"]);
+});
+
+test("never removes a workspace a run holds, and removes extra pool workspaces sooner", () => {
+  for (const [name, age] of [
+    ["held", 9],
+    ["build", 3],
+    ["build.2", 3],
+  ] as const) {
+    mkdirSync(join(stateDir, "workspaces", name), { recursive: true });
+    touch(join(stateDir, "workspaces", name), age);
+  }
+  const held = tryLease(workspaceLeasePath(join(stateDir, "workspaces", "held")), "run");
+  const removed = pruneState({ stateDir, keepRuns: 20, keepArtifacts: 5, maxIdleDays: 7, maxIdleExtraDays: 1, now });
+  held!.release();
+  expect(removed.workspaces).toEqual(["build.2"]);
+  expect(readdirSync(join(stateDir, "workspaces")).sort()).toEqual(["build", "held"]);
 });
 
 test("removes another branch's idle state, but not while it has a live run", () => {

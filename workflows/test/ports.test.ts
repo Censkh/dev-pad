@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { isPortFree, PortReservations } from "../ports";
 
 const servers: Server[] = [];
@@ -46,4 +49,34 @@ test("rejects a count or starting port out of range", async () => {
   const reservations = new PortReservations();
   await expect(reservations.open("job-1", 0, 5000)).rejects.toThrow("isn't a positive integer");
   await expect(reservations.open("job-1", 1, 70_000)).rejects.toThrow("out of range");
+});
+
+test("never gives another runner's reserved ports to a combination", async () => {
+  const from = (await occupied()) + 1;
+  const directory = mkdtempSync(join(tmpdir(), "dev-pad-ports-"));
+  const module = resolve(import.meta.dir, "../ports.ts");
+  const other = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `const { PortReservations } = await import(${JSON.stringify(module)});
+       const ports = await new PortReservations(${JSON.stringify(directory)}).open("job-1", 2, ${from});
+       console.log(JSON.stringify(ports));
+       await Bun.sleep(60_000);`,
+    ],
+    { stdout: "pipe" },
+  );
+  try {
+    const reader = other.stdout.getReader();
+    const theirs = JSON.parse(new TextDecoder().decode((await reader.read()).value)) as number[];
+    const reservations = new PortReservations(directory);
+    const ours = await reservations.open("job-1", 2, from);
+    expect(theirs).toHaveLength(2);
+    expect(ours.filter((port) => theirs.includes(port))).toEqual([]);
+    reservations.release("job-1");
+  } finally {
+    other.kill("SIGKILL");
+    await other.exited;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

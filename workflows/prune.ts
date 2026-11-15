@@ -1,9 +1,11 @@
 // Keeps the runner's state from growing without bound, as GitHub keeps logs and artifacts for a
-// while and gives every job a fresh machine. A run prunes once it holds its workflow and branch's
-// lock, so nothing it removes is in use.
+// while and gives every job a fresh machine. Runs of the same workflow and branch can go at once,
+// so a live run and a workspace another run holds (its lease, workspaces.ts) are never removed.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { alive, tryLease } from "./leases";
 import type { RunStatus } from "./status";
+import { isExtraPoolMember, workspaceLeasePath } from "./workspaces";
 
 export type PruneOptions = {
   // <state>/<repository>/<workflow>/<branch>: runs/ and workspaces/.
@@ -14,6 +16,8 @@ export type PruneOptions = {
   keepArtifacts: number;
   // Workspaces (and sibling branches' whole state) unused for longer go.
   maxIdleDays: number;
+  // The extra workspaces runs going at once needed (workspaces.ts: <key>.2 and on) go sooner.
+  maxIdleExtraDays?: number;
   // Runs never removed (the one pruning).
   keep?: string[];
   now?: number;
@@ -38,15 +42,6 @@ const mtime = (path: string) => {
     return 0;
   }
 };
-
-function alive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // A run whose status says it is queued or running and whose process is alive.
 function live(runDir: string) {
@@ -89,10 +84,14 @@ export function pruneState(options: PruneOptions) {
   const workspacesDir = join(options.stateDir, "workspaces");
   for (const name of directories(workspacesDir)) {
     const dir = join(workspacesDir, name);
-    if (now - mtime(dir) > options.maxIdleDays * DAY) {
-      rmSync(dir, { recursive: true, force: true });
-      removed.workspaces.push(name);
-    }
+    const maxIdle = isExtraPoolMember(name) ? (options.maxIdleExtraDays ?? options.maxIdleDays) : options.maxIdleDays;
+    if (now - mtime(dir) <= maxIdle * DAY) continue;
+    // Held while it goes, so no run starts using it meanwhile.
+    const lease = tryLease(workspaceLeasePath(dir), "prune");
+    if (!lease) continue;
+    rmSync(dir, { recursive: true, force: true });
+    lease.release();
+    removed.workspaces.push(name);
   }
 
   // Other branches' state for the same workflow, once idle that long and with no live run.
