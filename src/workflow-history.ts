@@ -65,7 +65,7 @@ export function runOptions(args: readonly string[]) {
   };
   const flag = (name: string, words: string) => (other.includes(name) ? [words] : []);
   return [
-    ...flag("--deploy", "deploy"),
+    ...flag("--dry-run", "dry run"),
     ...flag("--check", "check"),
     ...list("--job", "job", "jobs"),
     ...list("--skip", "skipping"),
@@ -77,7 +77,7 @@ export function runOptions(args: readonly string[]) {
     ...list("--branch", "as branch"),
     ...list("--event", "as"),
     ...list("--jobs", "parallel"),
-    ...other.filter((arg) => !["--deploy", "--check", "--all", "--no-fail-fast"].includes(arg)),
+    ...other.filter((arg) => !["--dry-run", "--check", "--all", "--no-fail-fast"].includes(arg)),
   ].join(" · ");
 }
 

@@ -20,10 +20,10 @@ export type RunInfo = {
   sha: string;
   branch: string;
   event: string;
-  // Whether this run may use secrets and deploy (--deploy).
+  // Whether this run may use secrets and deploy: a complete run without --dry-run.
   deploy: boolean;
-  // The commit changes are compared with: --since, else this workflow's last successful complete
-  // --deploy run on this branch.
+  // The commit changes are compared with: --since, else this workflow's last successful deploying
+  // run on this branch.
   lastSuccessSha?: string;
   artifacts: string;
   toolCache: string;

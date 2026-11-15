@@ -200,7 +200,8 @@ at the selected Git commit and gives each job a separate checkout. The workflow
 defines dependencies, conditions, and matrices. Local TypeScript processors implement
 the shell steps, and DevPad implements a subset of common actions. Run only workflows
 and processors you trust. To show **Deploy** (**d**) alongside **Run checks** (**r**), add `deployment: { keychainService: "project-workflows" }`. Deployment runs the
-whole workflow. Mark jobs that publish or mutate external state in the processor
+whole workflow. A complete run deploys unless you pass `--dry-run`; a run limited with `--job`,
+`--skip`, `--matrix` or `--since` never deploys, and **Run checks** passes `--dry-run`. Mark jobs that publish or mutate external state in the processor
 module's `deployJobs` export, including jobs that read secrets from top-level workflow
 environment variables.
 

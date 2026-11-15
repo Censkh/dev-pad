@@ -165,9 +165,15 @@ function dashboardServices(config: Config): DashboardService[] {
         local: workflow,
         ports: false,
         autostart: false,
-        command: [...command, "--stream", "--status-events", ...(workflow.jobs ?? []).flatMap((job) => ["--job", job])],
+        command: [
+          ...command,
+          "--dry-run",
+          "--stream",
+          "--status-events",
+          ...(workflow.jobs ?? []).flatMap((job) => ["--job", job]),
+        ],
         deployCommand: workflow.deployment
-          ? [...command, "--deploy", "--status-events", ...(keychain ? ["--keychain-service", keychain] : [])]
+          ? [...command, "--status-events", ...(keychain ? ["--keychain-service", keychain] : [])]
           : undefined,
       };
     }),

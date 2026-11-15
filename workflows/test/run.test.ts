@@ -216,6 +216,7 @@ test.skipIf(!canRun)(
         "--state",
         state,
         "--no-fail-fast",
+        "--dry-run",
       ],
       { stdout: "pipe", stderr: "pipe" },
     );
@@ -232,7 +233,7 @@ test.skipIf(!canRun)(
       first: { result: "success" },
       second: { result: "success" },
       "pull-request-only": { result: "skipped" },
-      secret: { result: "skipped", note: "uses secrets: pass --deploy" },
+      secret: { result: "skipped", note: "uses secrets: dry run" },
       failing: { result: "failure" },
       "after-failing": { result: "skipped" },
     });
@@ -284,7 +285,7 @@ test.skipIf(!canRun)(
 
 // Runs after the submodule test, on the probe's second commit.
 test.skipIf(!canRun)(
-  "--since sets the commit changes are compared with, and --matrix runs only matching combinations in their place",
+  "--since sets the commit changes are compared with, --matrix runs only matching combinations in their place, and such a partial run never loads secrets to deploy",
   () => {
     const markers = join(state, "probe/probe/main/markers");
     rmSync(markers, { recursive: true, force: true });
@@ -513,9 +514,9 @@ describe.skipIf(!canRun)("runs going at once", () => {
   test("a run that does everything an earlier one would cancels it", async () => {
     const stateDir = join(dir, "turns-supersede");
     const release = join(dir, "release-supersede");
-    const older = start(stateDir, release);
+    const older = start(stateDir, release, ["--dry-run"]);
     const [first] = await until(() => holdingRuns(stateDir));
-    const newer = start(stateDir, release);
+    const newer = start(stateDir, release, ["--dry-run"]);
     await older.exited;
     writeFileSync(release, "");
     await newer.exited;
@@ -529,7 +530,7 @@ describe.skipIf(!canRun)("runs going at once", () => {
   test("a run whose work an earlier one already does stops, absorbed by it", async () => {
     const stateDir = join(dir, "turns-absorb");
     const release = join(dir, "release-absorb");
-    const older = start(stateDir, release);
+    const older = start(stateDir, release, ["--dry-run"]);
     const [first] = await until(() => holdingRuns(stateDir));
     const newer = start(stateDir, release, ["--job", "slow"]);
     expect(await newer.exited).toBe(130);
@@ -554,7 +555,7 @@ describe.skipIf(!canRun)("runs going at once", () => {
   test("a run that neither covers nor is covered goes alongside the earlier one, in a workspace of its own", async () => {
     const stateDir = join(dir, "turns-alongside");
     const release = join(dir, "release-alongside");
-    const older = start(stateDir, release);
+    const older = start(stateDir, release, ["--dry-run"]);
     await until(() => holdingRuns(stateDir));
     const newer = start(stateDir, release, ["--job", "slow", "--ref", sibling()]);
     // Both hold at once.
@@ -618,9 +619,9 @@ describe.skipIf(!canRun)("runs going at once", () => {
     const release = join(dir, "release-exclusive");
     const olderState = join(dir, "turns-exclusive-a");
     const newerState = join(dir, "turns-exclusive-b");
-    const older = start(olderState, release, [], true);
+    const older = start(olderState, release, ["--dry-run"], true);
     await until(() => holdingRuns(olderState));
-    const newer = start(newerState, release, [], true);
+    const newer = start(newerState, release, ["--dry-run"], true);
     // The newer run gets going (its quick job passes) but its slow job waits for the group.
     await until(() =>
       statuses(newerState)
@@ -637,12 +638,12 @@ describe.skipIf(!canRun)("runs going at once", () => {
     expect(Date.parse(newerSlow.startedAt!)).toBeGreaterThanOrEqual(Date.parse(olderSlow.finishedAt!));
   }, 60_000);
 
-  test("runs with --deploy take turns", async () => {
+  test("complete runs deploy unless they're dry runs, and deploying runs take turns", async () => {
     const stateDir = join(dir, "turns-deploy");
     const release = join(dir, "release-deploy");
-    const older = start(stateDir, release, ["--deploy"]);
+    const older = start(stateDir, release);
     const [first] = await until(() => holdingRuns(stateDir));
-    const newer = start(stateDir, release, ["--deploy", "--job", "quick", "--ref", sibling()]);
+    const newer = start(stateDir, release, ["--ref", sibling()]);
     const waiting = await until(() =>
       // A run is queued before it records what it waits for.
       statuses(stateDir).find((status) => status.state === "queued" && status.waitingFor),

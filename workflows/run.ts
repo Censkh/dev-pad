@@ -13,8 +13,9 @@
 //                    committed work runs: each job gets a clean checkout of it.
 //   --branch <name>  github.ref_name (default the repository's current branch, else main).
 //   --event <name>   github.event_name (default push).
-//   --deploy         Load the workflow's secrets and run the jobs that use them (deploys,
-//                    publishing). Without it those jobs are skipped.
+//   --dry-run        Skip the jobs that use secrets (deploys, publishing). A complete run
+//                    otherwise loads the workflow's secrets and runs them; a run limited by
+//                    --job, --skip, --matrix or --since never does.
 //   --job <id>       Run only this job and what it needs (repeatable).
 //   --skip <id>      Treat this job as skipped (repeatable).
 //   --no-fail-fast   Run every job even after a step fails. By default the first failing step
@@ -37,8 +38,8 @@
 // State lives in .local/workflows/<repository>/<workflow>/<branch>/:
 // workspaces/<job> (kept between runs, so dependencies stay installed; <job>.2 and on when runs
 // going at once need the same job's workspace), runs/<time>-<sha>/ (a log per job, artifacts,
-// summary.txt) and last-success.json, written after a complete --deploy run. Runs of the same
-// workflow and branch go side by side; only runs with --deploy take turns.
+// summary.txt) and last-success.json, written after a complete deploying run. Runs of the same
+// workflow and branch go side by side; only deploying runs take turns.
 //
 // Secrets come from the environment or the macOS Keychain service configured with --keychain-service.
 import { createHash } from "node:crypto";
@@ -279,7 +280,7 @@ function check(loaded: Loaded, selected: Set<string>, partial = false): string[]
   for (const [jobId, job] of Object.entries(loaded.workflow.jobs)) {
     if (!selected.has(jobId)) continue;
     process.stdout.write(
-      `${loaded.file} ${jobId}${deployOnly(loaded, jobId, job) ? " (uses secrets: --deploy only)" : ""}\n`,
+      `${loaded.file} ${jobId}${deployOnly(loaded, jobId, job) ? " (uses secrets: complete runs without --dry-run only)" : ""}\n`,
     );
     (job.steps ?? []).forEach((step, index) => {
       // A step never runs locally when its condition is false whether earlier steps passed or
@@ -346,7 +347,7 @@ function check(loaded: Loaded, selected: Set<string>, partial = false): string[]
 // --- Arguments ----------------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
-const flags = new Set(["--deploy", "--all", "--check", "--no-fail-fast", "--stream", "--status-events"]);
+const flags = new Set(["--dry-run", "--all", "--check", "--no-fail-fast", "--stream", "--status-events"]);
 const repeated: Record<string, string[]> = { "--job": [], "--skip": [], "--matrix": [] };
 const single: Record<string, string | undefined> = {};
 const positional: string[] = [];
@@ -411,7 +412,14 @@ const dependencies = workflowDependencies(loaded.workflow);
     process.exit(1);
   }
 }
-const deploy = !!single["--deploy"];
+// A complete run deploys unless it's a dry run; a run limited to part of the workflow never does,
+// so checking a few jobs, or what a push of some commits needs, can't deploy.
+const partialRun =
+  repeated["--job"].length > 0 ||
+  repeated["--skip"].length > 0 ||
+  repeated["--matrix"].length > 0 ||
+  single["--since"] !== undefined;
+const deploy = !single["--dry-run"] && !partialRun;
 const branch =
   single["--branch"] ?? gitOutput(loaded.repositoryRoot, "symbolic-ref", "--quiet", "--short", "HEAD") ?? "main";
 const event = single["--event"] ?? "push";
@@ -426,7 +434,7 @@ mkdirSync(toolCache, { recursive: true });
 const timeoutBin = Bun.which("gtimeout") ?? Bun.which("timeout") ?? "";
 if (!timeoutBin) throw new Error("Needs GNU timeout: brew install coreutils");
 
-// Secrets, only with --deploy, and all of them up front so a deploy never stops half way.
+// Secrets, only when deploying, and all of them up front so a deploy never stops half way.
 const secrets: Record<string, string> = {};
 if (deploy) {
   const names = new Set(
@@ -1069,7 +1077,7 @@ async function runJob(state: JobState): Promise<void> {
   }
   if (!deploy && deployOnly(loaded, id, job)) {
     state.result = "skipped";
-    state.note = "uses secrets: pass --deploy";
+    state.note = single["--dry-run"] ? "uses secrets: dry run" : "uses secrets: partial run";
     say(`- ${job.name ?? id}: skipped (${state.note})`);
     return;
   }
@@ -1121,8 +1129,8 @@ async function runJob(state: JobState): Promise<void> {
 // its own (workspaces.ts), exclusive groups and ports are leased across runs, and the machine's job
 // slots (machine-slots.ts) keep everything running within what the machine can take. A new run
 // stops every earlier live run whose work it does all of (decideSupersession) unless that one is
-// deploying, and stops itself when an earlier live run already does all of its own; runs with
-// --deploy take turns for the branch's deploy lease.
+// deploying, and stops itself when an earlier live run already does all of its own; deploying
+// runs take turns for the branch's deploy lease.
 const isAncestorCommit = (ancestor: string, descendant: string) =>
   Bun.spawnSync(["git", "merge-base", "--is-ancestor", ancestor, descendant], {
     cwd: loaded.repositoryRoot,
@@ -1204,7 +1212,7 @@ if (deploy) {
           ? "it is stopping, superseded by this run"
           : decision && !decision.supersedes
             ? decision.reason
-            : "runs with --deploy take turns";
+            : "deploying runs take turns";
     const run = older?.id ?? (holder ? `pid ${holder.pid}` : "another run");
     if (`${run} ${reason}` !== lastWait) {
       lastWait = `${run} ${reason}`;
@@ -1374,7 +1382,7 @@ async function withSlot(jobId: string, seconds: number, chain: number, quick: bo
   }
 }
 say(
-  `${loaded.slug} ${loaded.file} at ${sha.slice(0, 9)} on ${branch}${deploy ? " with --deploy" : ""}, ${slots} jobs at once` +
+  `${loaded.slug} ${loaded.file} at ${sha.slice(0, 9)} on ${branch}${deploy ? ", deploying" : ""}, ${slots} jobs at once` +
     (lastSuccessSha
       ? `; changes since ${single["--since"] ? `${single["--since"]} (${lastSuccessSha.slice(0, 9)})` : `the last successful run ${lastSuccessSha.slice(0, 9)}`}`
       : ""),
@@ -1442,14 +1450,6 @@ writeFileSync(
 );
 process.stdout.write(`\n${summary.join("\n")}\n`);
 // The changes job compares with the last run that did everything a push does, deploys included.
-if (
-  passed &&
-  deploy &&
-  !cancelled &&
-  !selected.length &&
-  !repeated["--skip"].length &&
-  !matrixFilters.length &&
-  !single["--since"]
-)
+if (passed && deploy && !cancelled)
   writeFileSync(recordPath, `${JSON.stringify({ sha, finishedAt: new Date().toISOString() }, null, 2)}\n`);
 process.exitCode = cancelled && !stoppedBy ? 130 : passed ? 0 : 1;
