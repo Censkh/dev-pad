@@ -193,10 +193,11 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entr
         /** The run a queued run waits for. */
         waitingFor: status.state === "queued" ? status.waitingFor?.run : undefined,
         stages: [],
-        jobs: status.jobs.map(({ id, name, state, needs, combinations }) => ({
+        jobs: status.jobs.map(({ id, name, state, note, needs, combinations }) => ({
           id,
           name,
           state,
+          note,
           needs,
           logKeys: combinations.map(({ key }) => key),
         })),

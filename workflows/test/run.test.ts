@@ -450,7 +450,7 @@ async function until<T>(read: () => T | undefined, timeout = 30_000): Promise<T>
 }
 
 describe.skipIf(!canRun)("runs going at once", () => {
-  const start = (stateDir: string, release: string, extra: string[] = [], exclusive = false) =>
+  const start = (stateDir: string, release: string, extra: string[] = [], exclusive = false, machineJobs?: number) =>
     Bun.spawn(
       [
         "bun",
@@ -468,7 +468,12 @@ describe.skipIf(!canRun)("runs going at once", () => {
       {
         stdout: "ignore",
         stderr: "ignore",
-        env: { ...process.env, RELEASE: release, EXCLUSIVE: exclusive ? "1" : "" },
+        env: {
+          ...process.env,
+          RELEASE: release,
+          EXCLUSIVE: exclusive ? "1" : "",
+          ...(machineJobs ? { DEVPAD_MACHINE_JOBS: String(machineJobs) } : {}),
+        },
       },
     );
   // The run's own live status, once it has written one in the given state.
@@ -569,6 +574,29 @@ describe.skipIf(!canRun)("runs going at once", () => {
     expect(
       readdirSync(join(stateDir, "probe/turns/main/workspaces")).filter((name) => name.endsWith(".lease")),
     ).toEqual([]);
+  }, 60_000);
+
+  test("a job waiting for a machine job slot is queued, naming the run that holds it", async () => {
+    const release = join(dir, "release-slots");
+    const olderState = join(dir, "turns-slots-a");
+    const newerState = join(dir, "turns-slots-b");
+    // One slot for the machine, shared through the tool cache, which the older run's slow job holds.
+    const older = start(olderState, release, ["--job", "slow"], false, 1);
+    const [holder] = await until(() => holdingRuns(olderState));
+    const newer = start(newerState, release, ["--job", "slow"], false, 1);
+    const queued = await until(() =>
+      (statuses(newerState)[0] as unknown as { jobs?: { id: string; state: string; note?: string }[] })?.jobs?.find(
+        (job) => job.id === "slow" && job.state === "queued" && job.note,
+      ),
+    );
+    expect(queued.note).toContain(`(${holder.id.split("Z-")[1]})`);
+    writeFileSync(release, "");
+    await Promise.all([older.exited, newer.exited]);
+    const job = (
+      statuses(newerState)[0] as unknown as { jobs: { id: string; state: string; note?: string }[] }
+    ).jobs.find((job) => job.id === "slow")!;
+    expect(job.state).toBe("success");
+    expect(job.note).toBeUndefined();
   }, 60_000);
 
   test("an exclusive group holds across runs, even with state of their own", async () => {

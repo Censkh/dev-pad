@@ -2,7 +2,9 @@
 // by the web GUI (gui.ts), and the rule for when a new run supersedes an older one.
 
 export type StepState = "running" | "success" | "failure" | "skipped";
-export type JobState = "pending" | "running" | "success" | "failure" | "skipped" | "cancelled";
+// A queued job is ready to run and waits for a job slot (this run's, or the machine's when other
+// runs hold them all).
+export type JobState = "pending" | "queued" | "running" | "success" | "failure" | "skipped" | "cancelled";
 export type RunState = "queued" | "running" | "passed" | "failed" | "cancelled";
 
 export type StepStatus = {

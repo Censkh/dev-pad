@@ -481,7 +481,7 @@ export async function mountUI(
                             {marker} {cleanText(job.name)}
                           </text>
                           <text height={1} truncate fg={colors.muted}>
-                            {job.state}
+                            {job.note ? `${job.state} · ${job.note}` : job.state}
                           </text>
                         </box>
                       );

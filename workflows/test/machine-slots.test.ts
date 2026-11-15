@@ -40,6 +40,29 @@ test("runners sharing the directory never hold more slots than it has", async ()
   expect(readdirSync(directory)).toEqual([]);
 });
 
+test("a runner waiting for a slot hears who holds them, leaving out a holder that died", async () => {
+  const directory = slotsDirectory();
+  writeFileSync(join(directory, "slot-1"), JSON.stringify({ pid: await deadPid(), owner: "killed/run" }));
+  const first = new MachineSlots(directory, 2, 20);
+  const release = await first.acquire("run-1/build");
+  // The dead holder's slot is the other one, so the first runner takes it too.
+  const releaseSecond = await first.acquire("run-1/test");
+  const heard: string[][] = [];
+  let stop = false;
+  const waiting = new MachineSlots(directory, 2, 20).acquire(
+    "run-2/build",
+    () => stop,
+    (holders) => {
+      heard.push(holders.map(({ owner }) => owner).sort());
+      stop = true;
+    },
+  );
+  expect(await waiting).toBeUndefined();
+  expect(heard).toEqual([["run-1/build", "run-1/test"]]);
+  release!();
+  releaseSecond!();
+});
+
 test("a slot whose holder died is taken over", async () => {
   const directory = slotsDirectory();
   writeFileSync(join(directory, "slot-0"), JSON.stringify({ pid: await deadPid(), owner: "killed/run" }));

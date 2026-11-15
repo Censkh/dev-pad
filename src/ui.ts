@@ -3,7 +3,15 @@ import { emitKeypressEvents, type Key } from "node:readline";
 import { stripVTControlCharacters } from "node:util";
 
 export type StatusItem = { label: string; value: string; tone?: string };
-export type WorkflowJob = { id: string; name: string; state: string; needs: string[]; logKeys: string[] };
+export type WorkflowJob = {
+  id: string;
+  name: string;
+  state: string;
+  /** Why the job is in its state, such as who holds the job slots a queued job waits for. */
+  note?: string;
+  needs: string[];
+  logKeys: string[];
+};
 export type Snapshot = {
   title: string;
   selectedId?: string;
@@ -276,7 +284,7 @@ export async function mountUI(
       const { marker, tone } = statusAppearance(job.state, pulse);
       const dependencies = job.needs.length ? ` ← ${job.needs.join(", ")}` : "";
       commands.push([
-        ` ${job.id === snapshot.selectedJob ? `>${job.state === "running" ? marker : ""}` : marker} ${job.name}${dependencies} · ${job.state}`,
+        ` ${job.id === snapshot.selectedJob ? `>${job.state === "running" ? marker : ""}` : marker} ${job.name}${dependencies} · ${job.state}${job.note ? ` · ${job.note}` : ""}`,
         tone,
       ]);
     }

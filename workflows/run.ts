@@ -67,7 +67,7 @@ import {
   type Value,
 } from "./expressions";
 import { alive, type Lease, leaseHolder, tryLease } from "./leases";
-import { MachineSlots } from "./machine-slots";
+import { type Holder, MachineSlots } from "./machine-slots";
 import { PortReservations } from "./ports";
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
 import { StepFailure } from "./processor";
@@ -684,6 +684,7 @@ function writeStatusNow() {
       id: job.id,
       name: job.name,
       state: job.state,
+      note: job.note,
       needs: job.needs,
       logKeys: job.combinations.map((part) => part.key),
     }));
@@ -1301,6 +1302,16 @@ function startWaiters() {
       startWaiters();
     }, 1000);
 }
+// Who holds the machine's job slots, for a job waiting for one, short enough for a job card: the
+// runs holding them, by the start time and commit in their IDs.
+function slotHoldersNote(holders: Holder[]) {
+  const runs = [...new Set(holders.map(({ owner }) => owner.split("/")[0]!))];
+  const label = (run: string) => {
+    const match = /^\d{4}-\d{2}-\d{2}T(\d{2})-(\d{2})-[\d-]+Z-(.+)$/.exec(run);
+    return run === runId ? "this run" : match ? `${match[1]}:${match[2]} run (${match[3]})` : run;
+  };
+  return `slots held by ${runs.map(label).join(", ")}`;
+}
 async function withSlot(jobId: string, seconds: number, chain: number, work: () => Promise<void>) {
   const exclusive = loaded.exclusive.filter((group) => group.includes(jobId));
   const groups = exclusive.map((_, index) => index);
@@ -1309,7 +1320,23 @@ async function withSlot(jobId: string, seconds: number, chain: number, work: () 
     waiters.push({ seconds, chain, groups, owner, exclusive, start });
     startWaiters();
   });
-  const release = await machineSlots.acquire(owner, () => cancelled);
+  const job = liveJob(jobId);
+  const release = await machineSlots.acquire(
+    owner,
+    () => cancelled,
+    (holders) => {
+      const note = slotHoldersNote(holders);
+      if (job.state === "queued" && job.note !== note) {
+        job.note = note;
+        updateStatus();
+      }
+    },
+  );
+  if (release && job.state === "queued") {
+    job.state = "running";
+    job.note = undefined;
+    updateStatus();
+  }
   try {
     if (release) await work();
   } finally {
@@ -1331,7 +1358,8 @@ for (;;) {
     if (state.result || state.running) continue;
     if ([...waitsFor(state)].some((wait) => !jobs.get(wait)!.result)) continue;
     state.running = true;
-    liveJob(state.id).state = "running";
+    // Running once a combination has a job slot.
+    liveJob(state.id).state = "queued";
     updateStatus();
     running.set(
       state.id,
@@ -1361,7 +1389,8 @@ const summary = [...jobs.values()].map(
 );
 const passed = [...jobs.values()].every((state) => state.result === "success" || state.result === "skipped");
 summary.push(`${passed ? "Passed" : "Failed"} in ${clock()}. Logs: ${runDir}`);
-for (const job of live.jobs) if (job.state === "pending" || job.state === "running") job.state = "cancelled";
+for (const job of live.jobs)
+  if (job.state === "pending" || job.state === "queued" || job.state === "running") job.state = "cancelled";
 // The jobs' temporary directories, as GitHub's runner empties RUNNER_TEMP after a job.
 rmSync(join(runDir, "tmp"), { recursive: true, force: true });
 live.state = stoppedBy ? "failed" : cancelled ? "cancelled" : passed ? "passed" : "failed";

@@ -5,7 +5,7 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-type Holder = { pid: number; owner: string };
+export type Holder = { pid: number; owner: string };
 
 const alive = (pid: number) => {
   try {
@@ -38,8 +38,15 @@ export class MachineSlots {
     });
   }
 
-  /** Takes a free slot, waiting until one is, and returns its release; undefined when `stop()` says to give up. */
-  async acquire(owner: string, stop: () => boolean = () => false): Promise<(() => void) | undefined> {
+  /**
+   * Takes a free slot, waiting until one is, and returns its release; undefined when `stop()` says
+   * to give up. While every slot is taken, `waiting` hears who holds them, each time it looks.
+   */
+  async acquire(
+    owner: string,
+    stop: () => boolean = () => false,
+    waiting?: (holders: Holder[]) => void,
+  ): Promise<(() => void) | undefined> {
     for (;;) {
       if (stop()) return undefined;
       for (let index = 0; index < this.count; index++) {
@@ -52,8 +59,19 @@ export class MachineSlots {
           };
         }
       }
+      waiting?.(this.holders());
       await Bun.sleep(this.pollMs);
     }
+  }
+
+  /** The live holders of the slots. */
+  holders(): Holder[] {
+    const holders: Holder[] = [];
+    for (let index = 0; index < this.count; index++) {
+      const holder = read(join(this.directory, `slot-${index}`));
+      if (holder && alive(holder.pid)) holders.push(holder);
+    }
+    return holders;
   }
 
   private take(path: string, owner: string) {
