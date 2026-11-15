@@ -617,6 +617,11 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
   let lastLocalPoll = 0;
   let displayedRunId: string | undefined;
 
+  /** A saved run's ID (`2026-11-15T16-08-37-887Z-<commit>`) as its start time and commit. */
+  const waitingLabel = (id: string) => {
+    const match = /^\d{4}-\d{2}-\d{2}T(\d{2})-(\d{2})-[\d-]+Z-(.+)$/.exec(id);
+    return match ? `${match[1]}:${match[2]} (${match[3]})` : id;
+  };
   const workflowRuns = (s: State): WorkflowRun[] => {
     const runs: WorkflowRun[] = [];
     const liveStartedAt = s.workflowRun?.startedAt ?? s.localStartedAt;
@@ -636,7 +641,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         id: `local:${saved.id}`,
         startedAt: Date.parse(saved.startedAt) || 0,
         status: saved.state,
-        label: `Local · ${saved.startedAt.slice(0, 16).replace("T", " ")}${saved.partial ? ` · ${saved.partial.join(", ")}` : ""}`,
+        label: `Local · ${saved.startedAt.slice(0, 16).replace("T", " ")}${saved.partial ? ` · ${saved.partial.join(", ")}` : ""}${saved.waitingFor ? ` · waiting for ${waitingLabel(saved.waitingFor)}` : ""}`,
         source: "local",
         saved,
       });
@@ -897,7 +902,8 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
           run: () => ctx.stop(service.id),
         });
       // A run started from the command line is cancelled as Ctrl-C there would.
-      const runner = run?.source === "local" && run.status === "running" ? run.saved.pid : undefined;
+      const runner =
+        run?.source === "local" && ["running", "queued"].includes(run.status) ? run.saved.pid : undefined;
       if (runner)
         actions.unshift({
           key: "q",
@@ -1300,7 +1306,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
               const s = state(service.id);
               if (
                 service.id === selectedId ||
-                s.localRuns?.some((run) => run.state === "running") ||
+                s.localRuns?.some((run) => ["running", "queued"].includes(run.state)) ||
                 (await localWorkflowRunsStamp(cwd, service.local)) !== s.localRunsStamp
               )
                 await refreshLocalWorkflows(service);

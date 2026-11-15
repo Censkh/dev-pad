@@ -247,6 +247,65 @@ test("a run started outside DevPad shows on a workflow that isn't selected and h
   }
 }, 15_000);
 
+test("a run waiting for the runner's lock shows as queued, with the run it waits for", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "dev-pad-queued-run-"));
+  Bun.spawnSync(["git", "init", "-qb", "main"], { cwd });
+  writeFileSync(join(cwd, "deploy.yml"), "jobs: {}\n");
+  const runs = join(cwd, ".local/workflows/Owner/deploy/main/runs");
+  const save = (id: string, state: string, startedAt: string, extra: object) => {
+    mkdirSync(join(runs, id), { recursive: true });
+    writeFileSync(
+      join(runs, id, "status.json"),
+      JSON.stringify({
+        version: 1,
+        id,
+        workflowPath: "deploy.yml",
+        branch: "main",
+        state,
+        startedAt,
+        args: ["deploy.yml"],
+        config: { deploy: false },
+        jobs: [],
+        ...extra,
+      }),
+    );
+  };
+  const holder = "2026-11-15T16-08-37-887Z-05d5196b7";
+  // This test process stands in for both live runners.
+  save(holder, "running", "2026-11-15T16:08:37.887Z", { pid: process.pid });
+  save("2026-11-15T16-20-44-130Z-8bc23188e", "queued", "2026-11-15T16:20:44.130Z", {
+    pid: process.pid,
+    waitingFor: { run: holder, reason: "this run doesn't include setup" },
+  });
+  // A queued run whose runner was killed is left behind as "queued": it isn't listed.
+  save("2026-11-15T16-25-00-000Z-0dd44136c", "queued", "2026-11-15T16:25:00.000Z", { pid: 2 ** 22 + 1 });
+  const dashboard = createDashboard({
+    title: "Queued runs",
+    cwd,
+    services: [],
+    workflows: [{ id: "deploy", file: "deploy.yml" }],
+  });
+  try {
+    await dashboard.start();
+    await dashboard.key("w");
+    await dashboard.key("1");
+    let listed: { id: string; label: string; status: string }[] | undefined;
+    for (let attempt = 0; attempt < 60 && (listed?.length ?? 0) < 2; attempt++) {
+      await dashboard.health();
+      listed = dashboard.snapshot().workflowRuns;
+      await Bun.sleep(100);
+    }
+    expect(listed?.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: "local:2026-11-15T16-20-44-130Z-8bc23188e", status: "queued" },
+      { id: `local:${holder}`, status: "running" },
+    ]);
+    expect(listed?.[0]?.label).toContain(holder.slice(-9));
+  } finally {
+    await dashboard.shutdown();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test.skipIf(process.platform === "win32")("merges hosted and local history and opens the newest run", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "dev-pad-merged-runs-"));
   const path = process.env.PATH;

@@ -13,8 +13,10 @@ type SavedStatus = {
   workflowPath: string;
   branch: string;
   state: string;
-  /** The runner's process, which keeps this file current while the run is going. */
+  /** The runner's process, which keeps this file current while the run is going or waits for its turn. */
   pid?: number;
+  /** The run a queued run waits for, when another holds the runner's lock. */
+  waitingFor?: { run: string };
   startedAt: string;
   args: string[];
   config: { deploy: boolean };
@@ -25,7 +27,7 @@ const git = promisify(execFile);
 const directories = async (path: string) =>
   (await readdir(path, { withFileTypes: true }).catch(() => [])).filter((entry) => entry.isDirectory());
 
-/** Whether the process that wrote a running run's status is still going: a runner that was killed leaves "running" behind. */
+/** Whether the process that wrote a live run's status is still going: a runner that was killed leaves "running" or "queued" behind. */
 const isAlive = (pid: number | undefined) => {
   if (!pid) return false;
   try {
@@ -120,7 +122,7 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entr
             status.branch !== branch ||
             !(
               ["passed", "failed", "cancelled"].includes(status.state) ||
-              (status.state === "running" && isAlive(status.pid))
+              (["running", "queued"].includes(status.state) && isAlive(status.pid))
             ) ||
             !Array.isArray(status.jobs)
           )
@@ -142,7 +144,9 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entr
         branch: status.branch,
         startedAt: status.startedAt,
         state: status.state,
-        pid: status.state === "running" ? status.pid : undefined,
+        pid: ["running", "queued"].includes(status.state) ? status.pid : undefined,
+        /** The run a queued run waits for. */
+        waitingFor: status.state === "queued" ? status.waitingFor?.run : undefined,
         stages: [],
         jobs: status.jobs.map(({ id, name, state, needs, combinations }) => ({
           id,
