@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- e440860: Processors can call `step.openPorts(count, from)` for ports nothing listens on, at or above `from`, to give the servers a step starts. Each combination's ports stay reserved until it ends, so matrix combinations and jobs running side by side never get the same ones.
+
 ## 0.7.1
 
 ### Patch Changes
