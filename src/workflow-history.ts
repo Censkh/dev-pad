@@ -36,16 +36,31 @@ const isAlive = (pid: number | undefined) => {
   }
 };
 
-function matchesWorkflow(status: SavedStatus, workflow: LocalWorkflow) {
-  if (status.config.deploy) return Boolean(workflow.deployment);
-  const requested = new Set(
-    status.args.flatMap((arg, index, args) => (arg === "--job" ? args.slice(index + 1, index + 2) : [])),
-  );
-  const configured = new Set(workflow.jobs ?? []);
-  return requested.size === configured.size && [...requested].every((job) => configured.has(job));
+const requestedJobs = (status: SavedStatus) =>
+  new Set(status.args.flatMap((arg, index, args) => (arg === "--job" ? args.slice(index + 1, index + 2) : [])));
+const sameJobs = (requested: Set<string>, configured: readonly string[]) =>
+  requested.size === new Set(configured).size && configured.every((job) => requested.has(job));
+
+/**
+ * Whether a saved run belongs to this workflow entry, and the jobs it was limited to when they
+ * aren't the entry's own: a run of exactly the entry's jobs is its run, and the entry for the whole
+ * workflow (no `jobs`) also lists the partial runs no other entry for the same file claims, such as
+ * one started from the command line with `--job`, so every run holding the runner shows somewhere.
+ */
+function matchWorkflow(
+  status: SavedStatus,
+  workflow: LocalWorkflow,
+  others: readonly LocalWorkflow[],
+): { partial?: string[] } | undefined {
+  if (status.config.deploy) return workflow.deployment ? {} : undefined;
+  const requested = requestedJobs(status);
+  if (sameJobs(requested, workflow.jobs ?? [])) return {};
+  if (workflow.jobs?.length || others.some((other) => sameJobs(requested, other.jobs ?? []))) return undefined;
+  return { partial: [...requested].sort() };
 }
 
-export async function localWorkflowRuns(cwd: string, config: LocalWorkflow) {
+/** The saved runs of one workflow entry; `entries` are all the dashboard's entries (see matchWorkflow). */
+export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entries: readonly LocalWorkflow[] = []) {
   try {
     const path = await realpath(resolve(cwd, config.file));
     const gitOptions = { cwd: dirname(path) };
@@ -58,7 +73,10 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow) {
     const workflowPath = relative(repository, path);
     const stateRoot = join(repository, ".local/workflows");
     const workflow = basename(path).replace(/\.ya?ml$/, "");
-    const saved: { status: SavedStatus; directory: string }[] = [];
+    const others = entries.filter(
+      (entry) => entry !== config && entry.id !== config.id && resolve(cwd, entry.file) === resolve(cwd, config.file),
+    );
+    const saved: { status: SavedStatus; directory: string; partial?: string[] }[] = [];
     for (const entry of await directories(stateRoot)) {
       const runs = join(stateRoot, entry.name, workflow, branch, "runs");
       const recent = (await directories(runs)).sort((a, b) => b.name.localeCompare(a.name)).slice(0, 40);
@@ -74,11 +92,11 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow) {
               ["passed", "failed", "cancelled"].includes(status.state) ||
               (status.state === "running" && isAlive(status.pid))
             ) ||
-            !Array.isArray(status.jobs) ||
-            !matchesWorkflow(status, config)
+            !Array.isArray(status.jobs)
           )
             continue;
-          saved.push({ status, directory });
+          const match = matchWorkflow(status, config, others);
+          if (match) saved.push({ status, directory, ...match });
         } catch {
           // A run may be removed by pruning while DevPad is starting.
         }
@@ -87,8 +105,10 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow) {
     return saved
       .sort((a, b) => b.status.startedAt.localeCompare(a.status.startedAt))
       .slice(0, 15)
-      .map(({ status, directory }) => ({
+      .map(({ status, directory, partial }) => ({
         id: status.id,
+        /** The jobs a partial run was limited to, when they aren't this entry's own. */
+        partial,
         branch: status.branch,
         startedAt: status.startedAt,
         state: status.state,

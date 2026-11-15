@@ -418,7 +418,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
           const runOrder = service.workflow ? ++workflowRunOrder : undefined;
           if (runOrder !== undefined) {
             if (service.local && s.localRunOrder !== undefined)
-              s.localRuns = await localWorkflowRuns(cwd, service.local);
+              s.localRuns = await localWorkflowRuns(cwd, service.local, config.workflows);
             s.workflowRun = undefined;
             s.localRunOrder = runOrder;
             s.localStartedAt = new Date().toISOString();
@@ -627,7 +627,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         id: `local:${saved.id}`,
         startedAt: Date.parse(saved.startedAt) || 0,
         status: saved.state,
-        label: `Local · ${saved.startedAt.slice(0, 16).replace("T", " ")}`,
+        label: `Local · ${saved.startedAt.slice(0, 16).replace("T", " ")}${saved.partial ? ` · ${saved.partial.join(", ")}` : ""}`,
         source: "local",
         saved,
       });
@@ -806,7 +806,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
 
   const refreshLocalWorkflows = async (service: DashboardService) => {
     if (!service.local) return;
-    const runs = await localWorkflowRuns(cwd, service.local);
+    const runs = await localWorkflowRuns(cwd, service.local, config.workflows);
     if (closing) return;
     state(service.id).localRuns = runs;
     if (selectedId === service.id) syncSelectedRun(service);

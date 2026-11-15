@@ -50,3 +50,44 @@ test("local runs include a run still going from the command line, but not one wh
     await rm(repository, { recursive: true, force: true });
   }
 });
+
+test("the whole workflow's entry lists partial runs no other entry claims, with the jobs they ran", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "dev-pad-history-"));
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repository });
+    await mkdir(join(repository, ".github/workflows"), { recursive: true });
+    await writeFile(join(repository, ".github/workflows/deploy.yml"), "name: Deploy\n");
+    const runs = join(repository, ".local/workflows/Owner/deploy/main/runs");
+    const save = async (id, jobs) => {
+      await mkdir(join(runs, id), { recursive: true });
+      const status = {
+        version: 1,
+        id,
+        workflowPath: ".github/workflows/deploy.yml",
+        branch: "main",
+        state: "passed",
+        startedAt: `2026-01-01T00:00:0${id.at(-1)}.000Z`,
+        args: [".github/workflows/deploy.yml", ...jobs.flatMap((job) => ["--job", job])],
+        config: { deploy: false },
+        jobs: [],
+      };
+      await writeFile(join(runs, id, "status.json"), JSON.stringify(status));
+    };
+    await save("run-1", []);
+    await save("run-2", ["tests", "e2e"]);
+    await save("run-3", ["checks"]);
+
+    const whole = { id: "deploy", file: ".github/workflows/deploy.yml" };
+    const checks = { id: "checks", file: ".github/workflows/deploy.yml", jobs: ["checks"] };
+    const entries = [whole, checks];
+    const listed = (entry) =>
+      localWorkflowRuns(repository, entry, entries).then((saved) => saved.map(({ id, partial }) => ({ id, partial })));
+    assert.deepEqual(await listed(whole), [
+      { id: "run-2", partial: ["e2e", "tests"] },
+      { id: "run-1", partial: undefined },
+    ]);
+    assert.deepEqual(await listed(checks), [{ id: "run-3", partial: undefined }]);
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
