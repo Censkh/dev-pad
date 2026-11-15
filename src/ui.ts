@@ -49,7 +49,10 @@ export const palette = {
 
 export const cleanText = (text: string) => stripVTControlCharacters(text).replace(/\p{Cc}/gu, " ");
 
-export function statusAppearance(status: string) {
+// Both renderers sample this on their existing refresh loop.
+export const runningPulse = () => Math.floor(performance.now() / 650) % 2 === 0;
+
+export function statusAppearance(status: string, pulse = false) {
   switch (status) {
     case "success":
     case "passed":
@@ -65,6 +68,7 @@ export function statusAppearance(status: string) {
     case "restarting":
       return { tone: "warning", marker: "↻" };
     case "running":
+      return { tone: "warning", marker: pulse ? "●" : "◌" };
     case "starting":
     case "queued":
     case "stopping":
@@ -100,11 +104,12 @@ function fitText(value: string, width: number) {
   return { text: result, cells };
 }
 
-export function workflowChip(snapshot: Snapshot, width: number) {
+export function workflowChip(snapshot: Snapshot, width: number, pulse = false) {
   if (!snapshot.hasWorkflows) return undefined;
   const destination = snapshot.workflowView ? "Commands" : "Workflows";
   const { status, stages } = snapshot.workflowSummary ?? { status: "idle", stages: [] };
-  const stateLabel = status.charAt(0).toUpperCase() + status.slice(1);
+  const { marker, tone } = statusAppearance(status, pulse);
+  const stateLabel = (status === "running" ? `${marker} ` : "") + status.charAt(0).toUpperCase() + status.slice(1);
   const budget = Math.max(0, width - Math.min(22, Math.floor(width / 3)) - 1);
   const fullLabel = `w ${destination} · ${stateLabel}`;
   const label = budget >= fullLabel.length + (stages.length ? 9 : 0) ? fullLabel : `w ${stateLabel}`;
@@ -113,7 +118,7 @@ export function workflowChip(snapshot: Snapshot, width: number) {
   const stage = stages[0] && stageWidth > 0 ? fitText(stages[0], stageWidth).text : "";
   return {
     ...fitText(stage ? `${label} · ${stage}${extra}` : label, budget),
-    tone: statusAppearance(status).tone,
+    tone,
   };
 }
 
@@ -211,6 +216,7 @@ export async function mountUI(
   const render = () => {
     if (disposed) return;
     const snapshot = getSnapshot();
+    const pulse = runningPulse();
     // Log ids differ per filter, so a scroll position never carries across selections.
     const selection =
       [snapshot.selectedId, snapshot.workflowRunId, snapshot.selectedJob].filter(Boolean).join("/") || undefined;
@@ -230,9 +236,12 @@ export async function mountUI(
       );
     line(` ${snapshot.title}${snapshot.selectedId ? ` · Selected: ${selectedName}` : ""}`, "primary");
     const run = snapshot.workflowRuns?.find((run) => run.id === snapshot.workflowRunId);
-    const chip = workflowChip(snapshot, width);
+    const chip = workflowChip(snapshot, width, pulse);
     const footer = footerActions(snapshot, Math.max(0, width - 1), chip?.cells ?? 0);
-    if (run) line(` ←→ Runs · ${run.label} · ${run.status}`, "info");
+    if (run) {
+      const indicator = run.status === "running" ? `${statusAppearance(run.status, pulse).marker} ` : "";
+      line(` ←→ Runs · ${run.label} · ${indicator}${run.status}`, "info");
+    }
     const budget = Math.max(0, height - 7 - footer.rows.length - Number(Boolean(run)));
     const detailCount =
       snapshot.items.length + snapshot.services.reduce((count, service) => count + (service.items?.length ?? 0), 0);
@@ -247,7 +256,7 @@ export async function mountUI(
     const workflowEntries = entries.filter(({ service }) => service.workflow);
     const commands: Array<[string, string, boolean?]> = [];
     for (const { service, key } of commandEntries) {
-      const appearance = statusAppearance(service.status);
+      const appearance = statusAppearance(service.status, pulse);
       commands.push([
         ` ${`${key}.`.padEnd(4)}${appearance.marker}  ${service.name}  ${service.status}${service.detail ? ` · ${service.detail}` : `  ${service.url}`}`,
         appearance.tone,
@@ -259,10 +268,10 @@ export async function mountUI(
     for (const item of statusDetailsFit && !snapshot.workflowView ? snapshot.items : [])
       commands.push([` ${item.label}: ${item.value}`, item.tone ?? "info"]);
     for (const job of snapshot.workflowJobs ?? []) {
-      const { marker, tone } = statusAppearance(job.state);
+      const { marker, tone } = statusAppearance(job.state, pulse);
       const dependencies = job.needs.length ? ` ← ${job.needs.join(", ")}` : "";
       commands.push([
-        ` ${job.id === snapshot.selectedJob ? ">" : marker} ${job.name}${dependencies} · ${job.state}`,
+        ` ${job.id === snapshot.selectedJob ? `>${job.state === "running" ? marker : ""}` : marker} ${job.name}${dependencies} · ${job.state}`,
         tone,
       ]);
     }
@@ -279,7 +288,7 @@ export async function mountUI(
       const right = workflowEntries
         .slice(Math.max(0, workflowIndex - count + 1), Math.max(count, workflowIndex + 1))
         .flatMap(({ service, key }) => {
-          const { marker, tone } = statusAppearance(service.status);
+          const { marker, tone } = statusAppearance(service.status, pulse);
           return [
             [`${snapshot.selectedId === service.id ? ">" : " "}${key} ${service.name}`, "primary"],
             [`  ${marker} ${service.status}${service.workflowSource ? ` · ${service.workflowSource}` : ""}`, tone],

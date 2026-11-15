@@ -4,24 +4,21 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 import { createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   cleanText,
   footerActions,
   palette,
+  runningPulse,
   type Snapshot,
   type StatusItem,
   statusAppearance,
-  type WorkflowJob,
   workflowChip,
 } from "./ui.js";
+import { graphJobHeight, graphJobWidth, layoutWorkflowGraph } from "./workflow-graph.js";
 
 // Rows rendered at the live tail; older ones load in chunks as the log panel reaches its top.
 const logWindow = 300;
-const graphJobHeight = 2;
-const graphJobWidth = 24;
-const graphRowGap = 1;
-const graphColumnGap = 2;
 
 /** Index of the first entry whose id is at least `id`; entries are sorted by id. */
 function firstAtOrAfter(logs: Snapshot["logs"], id: number) {
@@ -33,24 +30,6 @@ function firstAtOrAfter(logs: Snapshot["logs"], id: number) {
     else high = middle;
   }
   return low;
-}
-
-function graphColumns(jobs: WorkflowJob[]) {
-  const depth = new Map<string, number>();
-  const byId = new Map(jobs.map((job) => [job.id, job]));
-  const visit = (id: string, path = new Set<string>()): number => {
-    const known = depth.get(id);
-    if (known !== undefined) return known;
-    const job = byId.get(id);
-    if (!job || path.has(id)) return -1;
-    const ancestors = new Set(path).add(id);
-    const level = 1 + Math.max(-1, ...job.needs.map((need) => visit(need, ancestors)));
-    depth.set(id, level);
-    return level;
-  };
-  const columns: WorkflowJob[][] = [];
-  for (const job of jobs) (columns[visit(job.id)] ??= []).push(job);
-  return columns;
 }
 
 async function writeSystemClipboard(value: string): Promise<boolean> {
@@ -114,7 +93,8 @@ export async function mountUI(
     const small = height < 20;
     const compactFooter = small && snapshot.hasWorkflows;
     const footerWidth = Math.max(0, width - (compactFooter ? 4 : 6));
-    const chip = workflowChip(snapshot, footerWidth);
+    const pulse = runningPulse();
+    const chip = workflowChip(snapshot, footerWidth, pulse);
     const footer = footerActions(snapshot, footerWidth, chip?.cells ?? 0);
     const footerHeight = (compactFooter ? 1 : 3) + footer.rows.length;
     const statusMessage = snapshot.actionLabel || snapshot.workflowMessage;
@@ -273,7 +253,7 @@ export async function mountUI(
     const workflows = entries.filter(({ service }) => service.workflow);
     const jobRows = snapshot.workflowJobs ?? [];
     const logName = jobRows.find((job) => job.id === snapshot.selectedJob)?.name ?? selectedName;
-    const columns = graphColumns(jobRows);
+    const graph = useMemo(() => layoutWorkflowGraph(snapshot.workflowJobs ?? []), [snapshot.workflowJobs]);
     const runs = snapshot.workflowRuns ?? [];
     const runIndex = runs.findIndex((run) => run.id === snapshot.workflowRunId);
     const firstRun = Math.max(0, Math.min(runIndex - 2, runs.length - 5));
@@ -294,12 +274,9 @@ export async function mountUI(
     );
     const statusDetailsFit = commandRows + 2 <= statusHeight;
     const workflowWidth = Math.min(36, Math.max(16, Math.floor(width * 0.29)));
-    const graphContentWidth = columns.length * graphJobWidth + Math.max(0, columns.length - 1) * graphColumnGap;
     // Leave room for terminal padding, the sidebar gap, and the graph's border and padding.
     const graphViewportWidth = width - workflowWidth - 7;
-    const graphRows = Math.max(0, ...columns.map((column) => column.length));
-    const graphContentHeight = Math.max(1, graphRows * graphJobHeight + Math.max(0, graphRows - 1) * graphRowGap);
-    const graphHeight = graphContentHeight + 2 + Number(graphContentWidth > graphViewportWidth);
+    const graphHeight = graph.height + 2 + Number(graph.width > graphViewportWidth);
     const logsMinHeight = small ? (snapshot.workflowView ? 3 : 1) : 4;
     const workflowHeight = height - rootPaddingY * 2 - 1 - footerHeight - statusRows - panelGap * (2 + statusRows);
     const availableGraphHeight = Math.max(0, workflowHeight - panelGap - logsMinHeight);
@@ -395,7 +372,8 @@ export async function mountUI(
                     if (event.button === 0) onKey(`workflow:${service.id}`);
                   }}
                 >
-                  {key} {cleanText(service.name)}
+                  {key} {service.status === "running" ? `${statusAppearance(service.status, pulse).marker} ` : ""}
+                  {cleanText(service.name)}
                   {service.workflowSource ? ` · ${service.workflowSource}` : ""}
                 </text>
               ))}
@@ -417,7 +395,7 @@ export async function mountUI(
                     if (event.button === 0) onKey(`run:${id}`);
                   }}
                 >
-                  {statusAppearance(status).marker} {cleanText(label)}
+                  {statusAppearance(status, pulse).marker} {cleanText(label)}
                 </text>
               ))}
               <text height={1} truncate fg={colors.info}>
@@ -437,7 +415,7 @@ export async function mountUI(
                 All jobs
               </text>
               {jobRows.map((job) => {
-                const { marker, tone } = statusAppearance(job.state);
+                const { marker, tone } = statusAppearance(job.state, pulse);
                 return (
                   // biome-ignore lint/a11y/noStaticElementInteractions: j/k selects terminal job rows.
                   <text
@@ -471,41 +449,39 @@ export async function mountUI(
                 scrollX
               >
                 {jobRows.length ? (
-                  <box flexDirection="row" gap={graphColumnGap}>
-                    {columns.map((column) => (
-                      <box
-                        key={column[0].id}
-                        flexDirection="column"
-                        gap={graphRowGap}
-                        width={graphJobWidth}
-                        flexShrink={0}
-                      >
-                        {column.map((job) => {
-                          const { marker, tone } = statusAppearance(job.state);
-                          return (
-                            // biome-ignore lint/a11y/noStaticElementInteractions: the terminal sidebar provides keyboard selection.
-                            <box
-                              key={job.id}
-                              height={graphJobHeight}
-                              border={false}
-                              flexDirection="column"
-                              backgroundColor={snapshot.selectedJob === job.id ? colors.border : colors.background}
-                              onMouseUp={(event) => {
-                                if (event.button === 0) onKey(`job:${job.id}`);
-                              }}
-                            >
-                              <text height={1} truncate fg={colors[tone]}>
-                                {marker} {cleanText(job.name)}
-                              </text>
-                              <text height={1} truncate fg={colors.muted}>
-                                {job.needs.length ? `← ${job.needs.join(", ")} · ` : ""}
-                                {job.state}
-                              </text>
-                            </box>
-                          );
-                        })}
-                      </box>
+                  <box width={graph.width} height={graph.height} flexShrink={0}>
+                    {graph.lines.map(({ x, y, text }) => (
+                      <text key={y} position="absolute" left={x} top={y} height={1} fg={colors.muted}>
+                        {text}
+                      </text>
                     ))}
+                    {graph.cards.map(({ job, x, y }) => {
+                      const { marker, tone } = statusAppearance(job.state, pulse);
+                      return (
+                        // biome-ignore lint/a11y/noStaticElementInteractions: the terminal sidebar provides keyboard selection.
+                        <box
+                          key={job.id}
+                          position="absolute"
+                          left={x}
+                          top={y}
+                          width={graphJobWidth}
+                          height={graphJobHeight}
+                          paddingX={1}
+                          flexDirection="column"
+                          backgroundColor={snapshot.selectedJob === job.id ? colors.border : colors.background}
+                          onMouseUp={(event) => {
+                            if (event.button === 0) onKey(`job:${job.id}`);
+                          }}
+                        >
+                          <text height={1} truncate fg={colors[tone]}>
+                            {marker} {cleanText(job.name)}
+                          </text>
+                          <text height={1} truncate fg={colors.muted}>
+                            {job.state}
+                          </text>
+                        </box>
+                      );
+                    })}
                   </box>
                 ) : (
                   <text height={1} truncate>
@@ -534,7 +510,7 @@ export async function mountUI(
               scrollX={false}
             >
               {commands.map(({ service, key }) => {
-                const appearance = statusAppearance(service.status);
+                const appearance = statusAppearance(service.status, pulse);
                 const selected = snapshot.selectedId === service.id;
                 return (
                   <box key={service.id} id={`service-${service.id}`} flexDirection="column" flexShrink={0}>
