@@ -58,6 +58,12 @@ if (process.argv[2] === "descendant") {
   await rename(`${process.argv[3]}.tmp`, process.argv[3]);
 } else if (process.argv[2] === "exit") {
   process.exitCode = Number(process.argv[3]);
+} else if (process.argv[2] === "launch") {
+  await delay(100);
+  console.log("launched");
+} else if (process.argv[2] === "wait-for-shutdown") {
+  console.log(process.pid);
+  await delay(20_000);
 } else {
   test("stop during a pending start waits and cleans the resource exactly once", async () => {
     let release;
@@ -202,7 +208,7 @@ if (process.argv[2] === "descendant") {
     const ios = { service: "app", id: "ios", label: "iOS" };
     const android = { service: "app", id: "android", label: "Android" };
     try {
-      const starting = dashboard.ctx.run([...runtime, "-e", "setTimeout(() => console.log('launched'), 100)"], {
+      const starting = dashboard.ctx.run(command("launch"), {
         target: ios,
       });
       assert.deepEqual(dashboard.snapshot().services[0].targets, [{ id: "ios", label: "iOS", status: "starting" }]);
@@ -247,7 +253,7 @@ if (process.argv[2] === "descendant") {
       services: [{ id: "app", name: "App", ports: false, start: async () => {} }],
     });
     const pending = dashboard.ctx
-      .run([...runtime, "-e", "console.log(process.pid); setInterval(() => {}, 1000)"], {
+      .run(command("wait-for-shutdown"), {
         target: { service: "app", id: "ios", label: "iOS" },
       })
       .catch(() => undefined);
