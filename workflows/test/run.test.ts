@@ -521,13 +521,37 @@ describe.skipIf(!canRun)("runs going at once", () => {
     expect(newerStatus.state).toBe("passed");
   }, 60_000);
 
-  test("a run that does less goes alongside the earlier one, in a workspace of its own", async () => {
+  test("a run whose work an earlier one already does stops, absorbed by it", async () => {
+    const stateDir = join(dir, "turns-absorb");
+    const release = join(dir, "release-absorb");
+    const older = start(stateDir, release);
+    const [first] = await until(() => holdingRuns(stateDir));
+    const newer = start(stateDir, release, ["--job", "slow"]);
+    expect(await newer.exited).toBe(130);
+    const absorbed = statuses(stateDir)[1];
+    expect(absorbed.state).toBe("cancelled");
+    expect(absorbed.supersededBy).toBe(first.id);
+    expect(slowCombination(absorbed)).toBeUndefined();
+    writeFileSync(release, "");
+    await older.exited;
+    expect(statuses(stateDir)[0].state).toBe("passed");
+  }, 60_000);
+
+  // A commit on a branch of its own: neither it nor the main branch's commit contains the other, so
+  // neither run covers the other's work.
+  const sibling = () => {
+    const tree = git(repo, "rev-parse", "HEAD^{tree}").stdout.toString().trim();
+    const commit = git(repo, "commit-tree", tree, "-m", "sibling").stdout.toString().trim();
+    git(repo, "branch", "-f", "sibling", commit);
+    return commit;
+  };
+
+  test("a run that neither covers nor is covered goes alongside the earlier one, in a workspace of its own", async () => {
     const stateDir = join(dir, "turns-alongside");
     const release = join(dir, "release-alongside");
     const older = start(stateDir, release);
     await until(() => holdingRuns(stateDir));
-    // Without quick, so it doesn't cover the earlier run's work.
-    const newer = start(stateDir, release, ["--job", "slow"]);
+    const newer = start(stateDir, release, ["--job", "slow", "--ref", sibling()]);
     // Both hold at once.
     const both = await until(() => {
       const held = holdingRuns(stateDir);
@@ -575,7 +599,7 @@ describe.skipIf(!canRun)("runs going at once", () => {
     const release = join(dir, "release-deploy");
     const older = start(stateDir, release, ["--deploy"]);
     const [first] = await until(() => holdingRuns(stateDir));
-    const newer = start(stateDir, release, ["--deploy", "--job", "quick"]);
+    const newer = start(stateDir, release, ["--deploy", "--job", "quick", "--ref", sibling()]);
     const waiting = await until(() =>
       // A run is queued before it records what it waits for.
       statuses(stateDir).find((status) => status.state === "queued" && status.waitingFor),

@@ -81,7 +81,8 @@ export type Decision = { supersedes: true } | { supersedes: false; reason: strin
 
 // A newer run replaces an older one on the same workflow and branch only when it does at least
 // everything the older one would: the same or a later commit, at least as much deploying, every
-// job the older one may run, no stricter matrix filter, and changes compared from no later a point.
+// job the older one may run, no stricter matrix filter, and changes compared from no later a point
+// (an older run of everything counts as comparing from its own commit).
 // Otherwise the older run's work isn't covered, so the newer one waits for it.
 export function decideSupersession(
   newer: RunConfig,
@@ -98,10 +99,23 @@ export function decideSupersession(
   const filters = new Set(older.matrix);
   const stricter = newer.matrix.filter((filter) => !filters.has(filter));
   if (stricter.length) return { supersedes: false, reason: `this run only runs ${stricter.join(", ")}` };
+  // A job the newer run skips is unchanged since its base, a commit trusted to pass. When that
+  // base is no later than where the older run compares from, the job is unchanged there too. An
+  // older run of everything compares from nowhere: it is covered when the newer run's base is no
+  // later than its commit (the job is unchanged there) or contains it (its commit already passed).
   if (newer.base !== undefined) {
-    if (older.base === undefined) return { supersedes: false, reason: "the earlier run runs everything" };
-    if (newer.base !== older.base && !isAncestor(newer.base, older.base))
-      return { supersedes: false, reason: "the earlier run compares with an earlier commit" };
+    const covered =
+      older.base === undefined
+        ? newer.base === older.sha || isAncestor(newer.base, older.sha) || isAncestor(older.sha, newer.base)
+        : newer.base === older.base || isAncestor(newer.base, older.base);
+    if (!covered)
+      return {
+        supersedes: false,
+        reason:
+          older.base === undefined
+            ? "the earlier run runs everything on a commit unrelated to this run's base"
+            : "the earlier run compares with an earlier commit",
+      };
   }
   return { supersedes: true };
 }

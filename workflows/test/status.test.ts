@@ -50,7 +50,21 @@ describe("decideSupersession", () => {
     expect(decideSupersession(config({}), config({ base: "a" }), isAncestor)).toEqual({
       supersedes: true,
     });
-    expect(decideSupersession(config({ base: "a" }), config({}), isAncestor).supersedes).toBe(false);
+  });
+
+  // A job the newer run skips is unchanged since its base, so it is unchanged on the earlier
+  // run's commit too, or that commit is part of the base, which passed.
+  test("changes compared from a commit related to an earlier run's cover that run of everything", () => {
+    expect(decideSupersession(config({ sha: "c", base: "a" }), config({}), isAncestor)).toEqual({
+      supersedes: true,
+    });
+    expect(decideSupersession(config({ sha: "c", base: "c" }), config({ sha: "a" }), isAncestor)).toEqual({
+      supersedes: true,
+    });
+    // d is on a branch of its own, so neither contains the other.
+    const branched = (ancestor: string, descendant: string) =>
+      ({ a: [], b: ["a"], c: ["a", "b", "d"], d: ["a"] })[descendant]!.includes(ancestor);
+    expect(decideSupersession(config({ sha: "c", base: "d" }), config({}), branched).supersedes).toBe(false);
   });
 });
 

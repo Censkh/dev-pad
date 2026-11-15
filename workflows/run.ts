@@ -1110,7 +1110,8 @@ async function runJob(state: JobState): Promise<void> {
 // its own (workspaces.ts), exclusive groups and ports are leased across runs, and the machine's job
 // slots (machine-slots.ts) keep everything running within what the machine can take. A new run
 // stops every earlier live run whose work it does all of (decideSupersession) unless that one is
-// deploying; runs with --deploy take turns for the branch's deploy lease.
+// deploying, and stops itself when an earlier live run already does all of its own; runs with
+// --deploy take turns for the branch's deploy lease.
 const isAncestorCommit = (ancestor: string, descendant: string) =>
   Bun.spawnSync(["git", "merge-base", "--is-ancestor", ancestor, descendant], {
     cwd: loaded.repositoryRoot,
@@ -1146,6 +1147,23 @@ function supersedeEarlierRuns() {
   }
 }
 supersedeEarlierRuns();
+// And the other way round: an earlier live run that already does everything this one would, on this
+// commit or a later one, absorbs this run, which stops before it starts anything.
+{
+  const covering = earlierLiveRuns().find(
+    ({ status }) =>
+      !signalled.has(status.id) && decideSupersession(status.config, live.config, isAncestorCommit).supersedes,
+  );
+  if (covering) {
+    say(`Superseded by ${covering.status.id}: it already does everything this run would`);
+    writeFileSync(join(runDir, "superseded-by"), covering.status.id);
+    live.supersededBy = covering.status.id;
+    live.state = "cancelled";
+    live.finishedAt = now();
+    writeStatusNow();
+    process.exit(130);
+  }
+}
 if (deploy) {
   const deployLease = join(stateDir, "deploy.lease");
   let lastWait = "";
