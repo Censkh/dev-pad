@@ -902,8 +902,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
           run: () => ctx.stop(service.id),
         });
       // A run started from the command line is cancelled as Ctrl-C there would.
-      const runner =
-        run?.source === "local" && ["running", "queued"].includes(run.status) ? run.saved.pid : undefined;
+      const runner = run?.source === "local" && ["running", "queued"].includes(run.status) ? run.saved.pid : undefined;
       if (runner)
         actions.unshift({
           key: "q",
