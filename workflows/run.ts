@@ -63,6 +63,7 @@ import {
   UnknownContextError,
   type Value,
 } from "./expressions";
+import { PortReservations } from "./ports";
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
 import { StepFailure } from "./processor";
 import { pruneState } from "./prune";
@@ -692,6 +693,9 @@ writeStatusNow();
 
 type CombinationResult = { ok: boolean; outputs: Record<string, string> };
 
+// Ports the steps of running combinations asked for (StepRun.openPorts).
+const ports = new PortReservations();
+
 async function runCombination(
   state: JobState,
   matrix: Record<string, Value>,
@@ -906,6 +910,7 @@ async function runCombination(
       },
       log: (text) => write(`${text}\n`),
       artifactDirectory: (artifact) => join(artifactsDir, artifact),
+      openPorts: (count, from) => ports.open(key, count, from),
     };
 
     let ok = true;
@@ -953,6 +958,7 @@ async function runCombination(
   if (liveLine) process.stdout.write(`[${key}] ${liveLine}\n`);
   await log.end();
   await reapWorkspace(workspace);
+  ports.release(key);
   const causedStop = stoppedBy?.job === id && failed;
   Object.assign(combo, {
     state: failed ? (cancelled && !causedStop ? "cancelled" : "failure") : "success",

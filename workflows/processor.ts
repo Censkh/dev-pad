@@ -62,6 +62,11 @@ export type StepRun = {
   // Waits for every job that uploads this artifact in this run (the scheduler starts a job only
   // after those, so this is already true when a processor asks).
   artifactDirectory(name: string): string;
+  /**
+   * `count` ports nothing listens on, at or above `from`, for servers the step starts: reserved for
+   * this job combination until it ends, so combinations running side by side never share them.
+   */
+  openPorts(count: number, from: number): Promise<number[]>;
 };
 
 export type Processor = (step: StepRun) => Promise<unknown>;
