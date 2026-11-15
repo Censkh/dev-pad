@@ -66,6 +66,7 @@ import {
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
 import { StepFailure } from "./processor";
 import { pruneState } from "./prune";
+import { chainSeconds, jobDuration, startOrder, type Waiter } from "./schedule";
 import {
   type CombinationStatus,
   decideSupersession,
@@ -614,9 +615,10 @@ const live: RunStatus = {
     combinations: [],
   })),
 };
-// Each combination's duration in the latest runs of this workflow on this branch, so the longest
-// start first; one never timed counts as longest.
+// Each combination's duration in the latest runs of this workflow on this branch, by job, for the
+// slots' start order (schedule.ts); one never timed counts as longest.
 const previousSeconds = new Map<string, number>();
+const previousJobSeconds = new Map<string, Map<string, number>>();
 try {
   const earlier = readdirSync(join(stateDir, "runs"))
     .filter((name) => name !== runId)
@@ -628,15 +630,24 @@ try {
       const status = JSON.parse(readFileSync(join(stateDir, "runs", name, "status.json"), "utf8")) as RunStatus;
       for (const job of status.jobs)
         for (const combination of job.combinations)
-          if (combination.startedAt && combination.finishedAt && !previousSeconds.has(combination.key))
-            previousSeconds.set(
-              combination.key,
-              (Date.parse(combination.finishedAt) - Date.parse(combination.startedAt)) / 1000,
-            );
+          if (combination.startedAt && combination.finishedAt && !previousSeconds.has(combination.key)) {
+            const seconds = (Date.parse(combination.finishedAt) - Date.parse(combination.startedAt)) / 1000;
+            previousSeconds.set(combination.key, seconds);
+            if (!previousJobSeconds.has(job.id)) previousJobSeconds.set(job.id, new Map());
+            previousJobSeconds.get(job.id)!.set(combination.key, seconds);
+          }
     } catch {}
   }
 } catch {}
-const expectedSeconds = (key: string) => previousSeconds.get(key) ?? Number.MAX_SAFE_INTEGER;
+const expectedSeconds = (key: string) => previousSeconds.get(key) ?? Number.POSITIVE_INFINITY;
+const isExclusive = (id: string) => loaded.exclusive.some((group) => group.includes(id));
+// The longest chain of jobs still to run that wait for this one, from their previous durations.
+const expectedChain = (id: string) =>
+  chainSeconds(dependencies, (dependent) =>
+    jobs.get(dependent)?.result || (!deploy && deployOnly(loaded, dependent, jobs.get(dependent)!.job))
+      ? 0
+      : jobDuration([...(previousJobSeconds.get(dependent)?.values() ?? [])], isExclusive(dependent)),
+  )(id);
 
 const liveJob = (id: string): LiveJob => live.jobs.find((job) => job.id === id)!;
 const statusPath = join(runDir, "status.json");
@@ -1051,7 +1062,7 @@ async function runJob(state: JobState): Promise<void> {
   await Promise.all(
     chosen.map(({ matrix, index }) => {
       const key = combinations.length > 1 ? `${id}-${index + 1}` : id;
-      return withSlot(id, expectedSeconds(key), async () => {
+      return withSlot(id, expectedSeconds(key), expectedChain(id), async () => {
         if (cancelled || (!ok && failFast)) return;
         const result = await runCombination(state, matrix, index, combinations.length);
         Object.assign(state.outputs, result.outputs);
@@ -1170,9 +1181,9 @@ writeStatusNow();
 // --- Slots --------------------------------------------------------------------------------------
 // A quarter of the CPUs' worth of job combinations at once (at least 2, and one per 8 GiB of
 // memory at most): with eight on a 16-core Mac, timing-sensitive suites (a CockroachDB container's
-// health check, 5 s test timeouts) failed under the load. Waiting combinations start longest first,
-// by their duration in the previous run, so the slowest finish soonest; exclusive groups (the
-// processors module's `exclusive`) never run two at once.
+// health check, 5 s test timeouts) failed under the load. Waiting combinations start in the order
+// schedule.ts gives, the one holding up the most work first; exclusive groups (the processors
+// module's `exclusive`) never run two at once.
 const slots = Math.max(
   1,
   Number(
@@ -1182,11 +1193,11 @@ const slots = Math.max(
 );
 let freeSlots = slots;
 const busyGroups = new Set<number>();
-const waiters: { priority: number; groups: number[]; start: () => void }[] = [];
+let waiters: (Waiter & { start: () => void })[] = [];
 function startWaiters() {
-  waiters.sort((a, b) => b.priority - a.priority);
+  waiters = startOrder(waiters);
   for (let i = 0; i < waiters.length && freeSlots > 0; ) {
-    const waiter = waiters[i];
+    const waiter = waiters[i]!;
     if (waiter.groups.some((group) => busyGroups.has(group))) {
       i++;
       continue;
@@ -1197,10 +1208,10 @@ function startWaiters() {
     waiter.start();
   }
 }
-async function withSlot(jobId: string, priority: number, work: () => Promise<void>) {
+async function withSlot(jobId: string, seconds: number, chain: number, work: () => Promise<void>) {
   const groups = loaded.exclusive.flatMap((group, index) => (group.includes(jobId) ? [index] : []));
   await new Promise<void>((start) => {
-    waiters.push({ priority, groups, start });
+    waiters.push({ seconds, chain, groups, start });
     startWaiters();
   });
   try {
