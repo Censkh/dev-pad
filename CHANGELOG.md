@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0
+
+### Minor Changes
+
+- b9af36b: Runs using the same tool cache now share one set of job slots, so workflows run at the same time (another workflow, another branch, another checkout) take turns instead of each starting its own jobs on top of the others'. `DEVPAD_MACHINE_JOBS` sets the number, which defaults to the per-run default. A slot held by a runner that died is taken over. Each job's steps also get `DEVPAD_JOB_CPUS`, the job's share of the CPUs when every slot is busy, to size their own parallelism.
+
+### Patch Changes
+
+- 0ef68a3: The dashboard lists local runs that are waiting for another run to finish, as queued, with the run they wait for. A queued run can be cancelled from the dashboard.
+
 ## 0.8.0
 
 ### Minor Changes
