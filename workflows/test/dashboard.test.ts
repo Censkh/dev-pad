@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDashboard } from "../../dist/index.js";
 
+// Runners the dashboard starts weigh no real load and don't space their starts out.
+process.env.DEVPAD_LOAD_SETTLE_SECONDS = "0";
+process.env.DEVPAD_MAX_CPU_BUSY = "100";
+process.env.DEVPAD_MIN_FREE_MEMORY_GIB = "0";
+
 test.skipIf(!(Bun.which("gtimeout") ?? Bun.which("timeout")))(
   "the dashboard runs and cancels registered workflows and shows their step output",
   async () => {

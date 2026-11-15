@@ -28,8 +28,8 @@
 //   --matrix <k=v>   Run only the matrix combinations whose k is v, in jobs whose matrix has
 //                    a k (repeatable): `--job backend-tests --matrix shard=2`. Combinations
 //                    keep their positions, so shard 2 of 5 is still 2/5.
-//   --jobs <n>       Job combinations at once (default: a quarter of the CPUs, at most one per
-//                    8 GiB of memory, at least 2). Each matrix combination has its own workspace.
+//   --jobs <n>       At most this many of the run's job combinations at once. Without it the
+//                    machine's load decides (machine-load.ts). Each combination has its own workspace.
 //   --processors <module>  The processors module (default processors/<repository>/<workflow>.ts).
 //   --state <dir>    Where workspaces and runs live (default .local/workflows).
 //   --check          Check that every step that can run locally has a processor, that every
@@ -54,7 +54,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { availableParallelism, homedir, totalmem } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { actionProcessor, actions, isPreservablePath } from "./actions";
 import {
@@ -68,7 +68,7 @@ import {
   type Value,
 } from "./expressions";
 import { alive, type Lease, leaseHolder, tryLease } from "./leases";
-import { type Holder, MachineSlots } from "./machine-slots";
+import { jobCpus, loadLimits, MachineLoad, waitNote } from "./machine-load";
 import { PortReservations } from "./ports";
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
 import { StepFailure } from "./processor";
@@ -544,7 +544,7 @@ for (const state of jobs.values())
     if (!jobs.has(need)) throw new Error(`${state.id} needs an unknown job ${need}`);
 
 // A job that downloads an artifact another job uploads starts after that job: on GitHub such
-// jobs may start early and wait (a polling step), which a fixed number of local slots can't afford.
+// jobs may start early and wait (a polling step), which local runs, starting jobs only as load allows, can't afford.
 const waitsFor = (state: JobState) => dependencies.get(state.id)!;
 
 const selected = repeated["--job"];
@@ -646,8 +646,8 @@ const live: RunStatus = {
   })),
 };
 // Each combination's duration in the latest runs of this workflow on this branch, by job, for the
-// slots' start order (schedule.ts); one never timed counts as longest. Every timing in those runs,
-// by combination, says whether it is quick enough to need no slot.
+// start order (schedule.ts); one never timed counts as longest. Every timing in those runs, by
+// combination, says whether it is quick enough to start without waiting for the machine's load.
 const previousSeconds = new Map<string, number>();
 const previousTimings = new Map<string, number[]>();
 const previousJobSeconds = new Map<string, Map<string, number>>();
@@ -727,6 +727,7 @@ async function runCombination(
   matrix: Record<string, Value>,
   index: number,
   total: number,
+  cpus: number,
 ): Promise<CombinationResult> {
   const { id, job } = state;
   const key = total > 1 ? `${id}-${index + 1}` : id;
@@ -800,7 +801,7 @@ async function runCombination(
     GITHUB_RUN_ATTEMPT: "1",
     GITHUB_JOB: id,
     RUNNER_TEMP: temp,
-    DEVPAD_JOB_CPUS: String(jobCpus),
+    DEVPAD_JOB_CPUS: String(cpus),
     RUNNER_OS: runnerOS,
     RUNNER_ARCH: runner.arch,
     RUNNER_ENVIRONMENT: "local",
@@ -1101,7 +1102,7 @@ async function runJob(state: JobState): Promise<void> {
   const failFast = truthy(evaluateValue(job.strategy?.["fail-fast"] ?? true, context));
   const continueOnError = truthy(evaluateValue(job["continue-on-error"] ?? false, context));
   let ok = true;
-  // The combinations run at once, each taking a slot; with the strategy's fail-fast, one failure
+  // The combinations run at once, each as the machine's load allows; with the strategy's fail-fast, one failure
   // stops those that haven't started.
   await Promise.all(
     chosen.map(({ matrix, index }) => {
@@ -1111,9 +1112,9 @@ async function runJob(state: JobState): Promise<void> {
         expectedSeconds(key),
         expectedChain(id),
         isQuick(previousTimings.get(key) ?? []),
-        async () => {
+        async (cpus) => {
           if (cancelled || (!ok && failFast)) return;
-          const result = await runCombination(state, matrix, index, combinations.length);
+          const result = await runCombination(state, matrix, index, combinations.length, cpus);
           Object.assign(state.outputs, result.outputs);
           if (!result.ok && !continueOnError) ok = false;
         },
@@ -1126,8 +1127,8 @@ async function runJob(state: JobState): Promise<void> {
 
 // --- Runs going at once ------------------------------------------------------------------------
 // Runs of the same workflow and branch go side by side: each job combination leases a workspace of
-// its own (workspaces.ts), exclusive groups and ports are leased across runs, and the machine's job
-// slots (machine-slots.ts) keep everything running within what the machine can take. A new run
+// its own (workspaces.ts), exclusive groups and ports are leased across runs, and combinations start
+// only while the machine's load leaves room (machine-load.ts). A new run
 // stops every earlier live run whose work it does all of (decideSupersession) unless that one is
 // deploying, and stops itself when an earlier live run already does all of its own; deploying
 // runs take turns for the branch's deploy lease.
@@ -1254,28 +1255,20 @@ writeStatusNow();
   }
 }
 
-// --- Slots --------------------------------------------------------------------------------------
-// A quarter of the CPUs' worth of job combinations at once (at least 2, and one per 8 GiB of
-// memory at most): with eight on a 16-core Mac, timing-sensitive suites (a CockroachDB container's
-// health check, 5 s test timeouts) failed under the load. Waiting combinations start in the order
-// schedule.ts gives, the one holding up the most work first; exclusive groups (the processors
-// module's `exclusive`) never run two at once.
-const defaultJobs = Math.max(
-  2,
-  Math.min(Math.floor(availableParallelism() / 4), Math.floor(totalmem() / 8 / 1024 ** 3)),
-);
-const slots = Math.max(1, Number(single["--jobs"] ?? defaultJobs));
-// The same number again, shared by every runner using this tool cache (machine-slots.ts), as a
-// project's workflows do: runs going at once take turns for these instead of each starting its own
-// jobs on top of the others'. DEVPAD_MACHINE_JOBS sets it.
-const machineJobs = Math.max(1, Number(process.env.DEVPAD_MACHINE_JOBS ?? defaultJobs));
-const machineSlotsDir = join(toolCache, "machine-slots");
-mkdirSync(machineSlotsDir, { recursive: true });
-const machineSlots = new MachineSlots(machineSlotsDir, machineJobs);
-// A job's share of the CPUs when every machine slot is busy, which its steps get as DEVPAD_JOB_CPUS
-// to size their own parallelism (test workers, containers) instead of assuming the whole machine.
-const jobCpus = Math.max(1, Math.floor(availableParallelism() / machineJobs));
+// --- Starting combinations ---------------------------------------------------------------------
+// Waiting combinations start in the order schedule.ts gives, the one holding up the most work first,
+// each once the machine's load leaves room for it (machine-load.ts, shared by every runner using this
+// tool cache); exclusive groups (the processors module's `exclusive`) never run two at once.
+// --jobs caps how many of this run's combinations run at once.
+const slots = single["--jobs"] ? Math.max(1, Number(single["--jobs"])) : Number.POSITIVE_INFINITY;
+const machineLoad = new MachineLoad(join(toolCache, "machine-load"), loadLimits());
 let freeSlots = slots;
+// This run's combinations that went through the load gate and are still running: with none, the
+// next starts whatever the load, so a busy machine never stalls the run.
+let admitted = 0;
+// Combinations admitted one at a time, in the order startWaiters hands them over.
+let admission: Promise<unknown> = Promise.resolve();
+let readyToAdmit = 0;
 // An exclusive group is a lease shared by every run of this workflow on the machine, whatever its
 // branch or state directory, since what it protects (fixed ports) is the machine's.
 const groupLeasePath = (group: string[]) =>
@@ -1326,27 +1319,24 @@ function startWaiters() {
       startWaiters();
     }, 1000);
 }
-// Who holds the machine's job slots, for a job waiting for one, short enough for a job card: the
-// runs holding them, by the start time and commit in their IDs.
-function slotHoldersNote(holders: Holder[]) {
-  const runs = [...new Set(holders.map(({ owner }) => owner.split("/")[0]!))];
-  const label = (run: string) => {
-    const match = /^\d{4}-\d{2}-\d{2}T(\d{2})-(\d{2})-[\d-]+Z-(.+)$/.exec(run);
-    return run === runId ? "this run" : match ? `${match[1]}:${match[2]} run (${match[3]})` : run;
-  };
-  return `slots held by ${runs.map(label).join(", ")}`;
-}
-async function withSlot(jobId: string, seconds: number, chain: number, quick: boolean, work: () => Promise<void>) {
+// Runs `work` once the combination may start, with the CPUs it may use.
+async function withSlot(
+  jobId: string,
+  seconds: number,
+  chain: number,
+  quick: boolean,
+  work: (cpus: number) => Promise<void>,
+) {
   const exclusive = loaded.exclusive.filter((group) => group.includes(jobId));
-  // A quick combination (schedule.ts) starts at once, without this run's or the machine's slots;
-  // one in an exclusive group still waits for the group.
+  // A quick combination (schedule.ts) starts at once, without waiting for --jobs or the machine's
+  // load; one in an exclusive group still waits for the group.
   if (quick && !exclusive.length) {
     const job = liveJob(jobId);
     if (job.state === "queued") {
       job.state = "running";
       updateStatus();
     }
-    await work();
+    await work(availableParallelism());
     return;
   }
   const groups = exclusive.map((_, index) => index);
@@ -1356,33 +1346,39 @@ async function withSlot(jobId: string, seconds: number, chain: number, quick: bo
     startWaiters();
   });
   const job = liveJob(jobId);
-  const release = await machineSlots.acquire(
-    owner,
-    () => cancelled,
-    (holders) => {
-      const note = slotHoldersNote(holders);
-      if (job.state === "queued" && job.note !== note) {
-        job.note = note;
-        updateStatus();
-      }
-    },
+  readyToAdmit++;
+  const turn = admission.then(() =>
+    machineLoad.admit(owner, {
+      stop: () => cancelled,
+      alone: () => admitted === 0,
+      waiting: (wait) => {
+        const note = waitNote(wait);
+        if (job.state === "queued" && job.note !== note) {
+          job.note = note;
+          updateStatus();
+        }
+      },
+    }),
   );
-  if (release && job.state === "queued") {
+  admission = turn.catch(() => undefined);
+  const load = await turn.finally(() => readyToAdmit--);
+  if (load) admitted++;
+  if (load && job.state === "queued") {
     job.state = "running";
     job.note = undefined;
     updateStatus();
   }
   try {
-    if (release) await work();
+    if (load) await work(jobCpus(load, readyToAdmit + 1));
   } finally {
-    release?.();
+    if (load) admitted--;
     freeSlots++;
     for (const lease of leases) lease.release();
     startWaiters();
   }
 }
 say(
-  `${loaded.slug} ${loaded.file} at ${sha.slice(0, 9)} on ${branch}${deploy ? ", deploying" : ""}, ${slots} jobs at once` +
+  `${loaded.slug} ${loaded.file} at ${sha.slice(0, 9)} on ${branch}${deploy ? ", deploying" : ""}, ${Number.isFinite(slots) ? `at most ${slots} jobs at once` : "jobs as the machine's load allows"}` +
     (lastSuccessSha
       ? `; changes since ${single["--since"] ? `${single["--since"]} (${lastSuccessSha.slice(0, 9)})` : `the last successful run ${lastSuccessSha.slice(0, 9)}`}`
       : ""),
@@ -1393,7 +1389,7 @@ for (;;) {
     if (state.result || state.running) continue;
     if ([...waitsFor(state)].some((wait) => !jobs.get(wait)!.result)) continue;
     state.running = true;
-    // Running once a combination has a job slot.
+    // Running once a combination starts.
     liveJob(state.id).state = "queued";
     updateStatus();
     running.set(

@@ -170,6 +170,10 @@ export const processors = {
 
 beforeAll(() => {
   if (!canRun) return;
+  // Runners the tests start weigh no real load and don't space their starts out, unless a test says.
+  process.env.DEVPAD_LOAD_SETTLE_SECONDS = "0";
+  process.env.DEVPAD_MAX_CPU_BUSY = "100";
+  process.env.DEVPAD_MIN_FREE_MEMORY_GIB = "0";
   dir = mkdtempSync(join(tmpdir(), "local-workflows-"));
   repo = join(dir, "probe");
   state = join(dir, "state");
@@ -451,7 +455,9 @@ async function until<T>(read: () => T | undefined, timeout = 30_000): Promise<T>
 }
 
 describe.skipIf(!canRun)("runs going at once", () => {
-  const start = (stateDir: string, release: string, extra: string[] = [], exclusive = false, machineJobs?: number) =>
+  // busy: the machine's CPUs always count as busier than the limit, so only a run's first
+  // combination starts while another of its own runs.
+  const start = (stateDir: string, release: string, extra: string[] = [], exclusive = false, busy = false) =>
     Bun.spawn(
       [
         "bun",
@@ -461,7 +467,7 @@ describe.skipIf(!canRun)("runs going at once", () => {
         join(dir, "turns.ts"),
         "--state",
         stateDir,
-        // Machine slots, exclusive groups and ports of their own, not the machine's real ones.
+        // Load gate, exclusive groups and ports of their own, not the machine's real ones.
         "--tool-cache",
         join(release, "..", `${release.split("/").pop()}-tools`),
         ...extra,
@@ -473,7 +479,7 @@ describe.skipIf(!canRun)("runs going at once", () => {
           ...process.env,
           RELEASE: release,
           EXCLUSIVE: exclusive ? "1" : "",
-          ...(machineJobs ? { DEVPAD_MACHINE_JOBS: String(machineJobs) } : {}),
+          ...(busy ? { DEVPAD_MAX_CPU_BUSY: "0" } : {}),
         },
       },
     );
@@ -577,42 +583,46 @@ describe.skipIf(!canRun)("runs going at once", () => {
     ).toEqual([]);
   }, 60_000);
 
-  test("a job waiting for a machine job slot is queued, naming the run that holds it", async () => {
-    const release = join(dir, "release-slots");
-    const olderState = join(dir, "turns-slots-a");
-    const newerState = join(dir, "turns-slots-b");
-    // One slot for the machine, shared through the tool cache, which the older run's slow job holds.
-    const older = start(olderState, release, ["--job", "slow"], false, 1);
-    const [holder] = await until(() => holdingRuns(olderState));
-    const newer = start(newerState, release, ["--job", "slow"], false, 1);
+  test("a job waiting for the machine's load is queued, saying why, and starts once its run's other job ends", async () => {
+    const release = join(dir, "release-load");
+    const stateDir = join(dir, "turns-load");
+    const run = start(stateDir, release, ["--dry-run"], false, true);
+    type Jobs = { jobs?: { id: string; state: string; note?: string }[] };
+    // Neither job is timed, so the slow one, first in the workflow, starts first and the quick
+    // one waits behind it for the busy CPUs.
     const queued = await until(() =>
-      (statuses(newerState)[0] as unknown as { jobs?: { id: string; state: string; note?: string }[] })?.jobs?.find(
-        (job) => job.id === "slow" && job.state === "queued" && job.note,
-      ),
+      (statuses(stateDir)[0] as unknown as Jobs)?.jobs?.find((job) => job.id === "quick" && job.note),
     );
-    expect(queued.note).toContain(`(${holder.id.split("Z-")[1]})`);
+    expect(queued.state).toBe("queued");
+    expect(queued.note).toMatch(/^CPU \d+% busy$/);
     writeFileSync(release, "");
-    await Promise.all([older.exited, newer.exited]);
-    const job = (
-      statuses(newerState)[0] as unknown as { jobs: { id: string; state: string; note?: string }[] }
-    ).jobs.find((job) => job.id === "slow")!;
-    expect(job.state).toBe("success");
-    expect(job.note).toBeUndefined();
+    expect(await run.exited).toBe(0);
+    const quick = (statuses(stateDir)[0] as unknown as Jobs).jobs!.find((job) => job.id === "quick")!;
+    expect(quick.state).toBe("success");
+    expect(quick.note).toBeUndefined();
   }, 60_000);
 
-  test("a job that has reliably taken seconds starts without waiting for a job slot", async () => {
+  test("a job that has reliably taken seconds starts without waiting for the machine's load", async () => {
     const release = join(dir, "release-quick");
     const quickState = join(dir, "turns-quick");
-    // Three runs time the quick job while the machine's one slot is free.
-    for (let run = 0; run < 3; run++)
-      expect(await start(quickState, release, ["--job", "quick"], false, 1).exited).toBe(0);
-    const older = start(join(dir, "turns-quick-holder"), release, ["--job", "slow"], false, 1);
-    await until(() => holdingRuns(join(dir, "turns-quick-holder")));
-    // The slow job still holds the one slot, but the quick job doesn't wait for it.
-    expect(await start(quickState, release, ["--job", "quick"], false, 1).exited).toBe(0);
-    expect(holdingRuns(join(dir, "turns-quick-holder"))).toHaveLength(1);
+    // Three runs time the quick job on its own.
+    for (let run = 0; run < 3; run++) expect(await start(quickState, release, ["--job", "quick"]).exited).toBe(0);
+    // The slow job holds and the CPUs count as busy, but the quick job doesn't wait.
+    const run = start(quickState, release, ["--dry-run"], false, true);
+    type Jobs = { jobs?: { id: string; state: string }[] };
+    const state = (status: Jobs, id: string) => status.jobs?.find((job) => job.id === id)?.state;
+    // The run whose slow job holds, once its quick job is done.
+    const holding = await until(() =>
+      (statuses(quickState) as unknown as Jobs[]).find(
+        (status) =>
+          state(status, "slow") === "running" &&
+          state(status, "quick") !== "queued" &&
+          state(status, "quick") !== "running",
+      ),
+    );
+    expect(state(holding, "quick")).toBe("success");
     writeFileSync(release, "");
-    await older.exited;
+    expect(await run.exited).toBe(0);
   }, 60_000);
 
   test("an exclusive group holds across runs, even with state of their own", async () => {

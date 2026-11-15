@@ -1,4 +1,4 @@
-// Which waiting job combinations take the free slots. A combination goes first when the work it
+// Which waiting job combinations start first. A combination goes first when the work it
 // holds up is longest: its own expected duration, the rest of its exclusive group still waiting
 // (which can only run after it, one at a time), and the longest chain of jobs that wait for its job.
 // Ordering by a combination's own duration alone starts a short job late even when a long chain
@@ -55,7 +55,7 @@ export function chainSeconds(
 }
 
 // A combination that has reliably taken only seconds, such as one that checks out the commit and
-// compares it with a base, needs no job slot: it adds no real load, and waiting for a slot behind
+// compares it with a base, starts without waiting for the machine's load: it adds no real load, and waiting behind
 // hours of tests would hold up everything that waits for it. Reliably: timed in at least three of
 // the latest runs, and never longer than ten seconds.
 export const quickSeconds = 10;

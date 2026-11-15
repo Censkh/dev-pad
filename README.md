@@ -205,6 +205,14 @@ whole workflow. A complete run deploys unless you pass `--dry-run`; a run limite
 module's `deployJobs` export, including jobs that read secrets from top-level workflow
 environment variables.
 
+Jobs start by the machine's load rather than a fixed number of slots: a job starts
+while the CPUs are under 75% busy and enough memory is free, starts across every run
+sharing a tool cache are spaced 10 seconds apart, and a run with nothing running always
+starts its next job. Tune it with `DEVPAD_MAX_CPU_BUSY` (percent),
+`DEVPAD_MIN_FREE_MEMORY_GIB` and `DEVPAD_LOAD_SETTLE_SECONDS`; `--jobs <n>` caps one run.
+Each job's steps get `DEVPAD_JOB_CPUS`, the CPUs idle when it started, to size their own
+parallelism.
+
 Without the dashboard, run:
 
 ```sh

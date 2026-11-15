@@ -7,7 +7,7 @@ export type WorkflowJob = {
   id: string;
   name: string;
   state: string;
-  /** Why the job is in its state, such as who holds the job slots a queued job waits for. */
+  /** Why the job is in its state, such as the machine's load a queued job waits for. */
   note?: string;
   needs: string[];
   logKeys: string[];
