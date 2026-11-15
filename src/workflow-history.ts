@@ -15,7 +15,7 @@ type SavedStatus = {
   state: string;
   /** The runner's process, which keeps this file current while the run is going or waits for its turn. */
   pid?: number;
-  /** The run a queued run waits for, when another holds the runner's lock. */
+  /** The run a queued run waits for: runs with --deploy take turns. */
   waitingFor?: { run: string };
   startedAt: string;
   args: string[];
