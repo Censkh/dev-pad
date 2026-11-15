@@ -1143,7 +1143,13 @@ function supersedeEarlierRuns() {
     if (!decideSupersession(live.config, status.config, isAncestorCommit).supersedes) continue;
     signalled.add(status.id);
     writeFileSync(join(dir, "superseded-by"), runId);
-    process.kill(status.pid, "SIGINT");
+    try {
+      process.kill(status.pid, "SIGINT");
+    } catch (error) {
+      // It ended after it was found live: nothing left to stop.
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") continue;
+      throw error;
+    }
     say(`Superseding ${status.id}: this run does everything it would`);
   }
 }
