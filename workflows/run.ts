@@ -72,7 +72,7 @@ import { PortReservations } from "./ports";
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
 import { StepFailure } from "./processor";
 import { pruneState } from "./prune";
-import { chainSeconds, jobDuration, startOrder, type Waiter } from "./schedule";
+import { chainSeconds, isQuick, jobDuration, startOrder, type Waiter } from "./schedule";
 import {
   type CombinationStatus,
   decideSupersession,
@@ -638,8 +638,10 @@ const live: RunStatus = {
   })),
 };
 // Each combination's duration in the latest runs of this workflow on this branch, by job, for the
-// slots' start order (schedule.ts); one never timed counts as longest.
+// slots' start order (schedule.ts); one never timed counts as longest. Every timing in those runs,
+// by combination, says whether it is quick enough to need no slot.
 const previousSeconds = new Map<string, number>();
+const previousTimings = new Map<string, number[]>();
 const previousJobSeconds = new Map<string, Map<string, number>>();
 try {
   const earlier = readdirSync(join(stateDir, "runs"))
@@ -652,8 +654,10 @@ try {
       const status = JSON.parse(readFileSync(join(stateDir, "runs", name, "status.json"), "utf8")) as RunStatus;
       for (const job of status.jobs)
         for (const combination of job.combinations)
-          if (combination.startedAt && combination.finishedAt && !previousSeconds.has(combination.key)) {
+          if (combination.startedAt && combination.finishedAt) {
             const seconds = (Date.parse(combination.finishedAt) - Date.parse(combination.startedAt)) / 1000;
+            previousTimings.set(combination.key, [...(previousTimings.get(combination.key) ?? []), seconds]);
+            if (previousSeconds.has(combination.key)) continue;
             previousSeconds.set(combination.key, seconds);
             if (!previousJobSeconds.has(job.id)) previousJobSeconds.set(job.id, new Map());
             previousJobSeconds.get(job.id)!.set(combination.key, seconds);
@@ -1094,12 +1098,18 @@ async function runJob(state: JobState): Promise<void> {
   await Promise.all(
     chosen.map(({ matrix, index }) => {
       const key = combinations.length > 1 ? `${id}-${index + 1}` : id;
-      return withSlot(id, expectedSeconds(key), expectedChain(id), async () => {
-        if (cancelled || (!ok && failFast)) return;
-        const result = await runCombination(state, matrix, index, combinations.length);
-        Object.assign(state.outputs, result.outputs);
-        if (!result.ok && !continueOnError) ok = false;
-      });
+      return withSlot(
+        id,
+        expectedSeconds(key),
+        expectedChain(id),
+        isQuick(previousTimings.get(key) ?? []),
+        async () => {
+          if (cancelled || (!ok && failFast)) return;
+          const result = await runCombination(state, matrix, index, combinations.length);
+          Object.assign(state.outputs, result.outputs);
+          if (!result.ok && !continueOnError) ok = false;
+        },
+      );
     }),
   );
   state.result = !ok && stoppedBy?.job === id ? "failure" : cancelled ? "cancelled" : ok ? "success" : "failure";
@@ -1318,8 +1328,19 @@ function slotHoldersNote(holders: Holder[]) {
   };
   return `slots held by ${runs.map(label).join(", ")}`;
 }
-async function withSlot(jobId: string, seconds: number, chain: number, work: () => Promise<void>) {
+async function withSlot(jobId: string, seconds: number, chain: number, quick: boolean, work: () => Promise<void>) {
   const exclusive = loaded.exclusive.filter((group) => group.includes(jobId));
+  // A quick combination (schedule.ts) starts at once, without this run's or the machine's slots;
+  // one in an exclusive group still waits for the group.
+  if (quick && !exclusive.length) {
+    const job = liveJob(jobId);
+    if (job.state === "queued") {
+      job.state = "running";
+      updateStatus();
+    }
+    await work();
+    return;
+  }
   const groups = exclusive.map((_, index) => index);
   const owner = `${runId}/${jobId}`;
   const leases = await new Promise<Lease[]>((start) => {

@@ -599,6 +599,21 @@ describe.skipIf(!canRun)("runs going at once", () => {
     expect(job.note).toBeUndefined();
   }, 60_000);
 
+  test("a job that has reliably taken seconds starts without waiting for a job slot", async () => {
+    const release = join(dir, "release-quick");
+    const quickState = join(dir, "turns-quick");
+    // Three runs time the quick job while the machine's one slot is free.
+    for (let run = 0; run < 3; run++)
+      expect(await start(quickState, release, ["--job", "quick"], false, 1).exited).toBe(0);
+    const older = start(join(dir, "turns-quick-holder"), release, ["--job", "slow"], false, 1);
+    await until(() => holdingRuns(join(dir, "turns-quick-holder")));
+    // The slow job still holds the one slot, but the quick job doesn't wait for it.
+    expect(await start(quickState, release, ["--job", "quick"], false, 1).exited).toBe(0);
+    expect(holdingRuns(join(dir, "turns-quick-holder"))).toHaveLength(1);
+    writeFileSync(release, "");
+    await older.exited;
+  }, 60_000);
+
   test("an exclusive group holds across runs, even with state of their own", async () => {
     const release = join(dir, "release-exclusive");
     const olderState = join(dir, "turns-exclusive-a");

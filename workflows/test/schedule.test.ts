@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chainSeconds, jobDuration, startOrder, type Waiter } from "../schedule";
+import { chainSeconds, isQuick, jobDuration, startOrder, type Waiter } from "../schedule";
 
 const waiter = (name: string, seconds: number, chain = 0, groups: number[] = []) => ({ name, seconds, chain, groups });
 const names = (waiters: (Waiter & { name: string })[]) => startOrder(waiters).map((w) => w.name);
@@ -65,4 +65,12 @@ describe("jobDuration", () => {
   test("a job never timed counts as nothing", () => {
     expect(jobDuration([], true)).toBe(0);
   });
+});
+
+test("a combination is quick only when several recent runs all took seconds", () => {
+  expect(isQuick([0.4, 1, 2])).toBe(true);
+  // Too few timings to rely on.
+  expect(isQuick([0.4, 1])).toBe(false);
+  // One slow run is enough to need a slot.
+  expect(isQuick([0.4, 1, 45])).toBe(false);
 });

@@ -54,6 +54,15 @@ export function chainSeconds(
   return chain;
 }
 
+// A combination that has reliably taken only seconds, such as one that checks out the commit and
+// compares it with a base, needs no job slot: it adds no real load, and waiting for a slot behind
+// hours of tests would hold up everything that waits for it. Reliably: timed in at least three of
+// the latest runs, and never longer than ten seconds.
+export const quickSeconds = 10;
+export function isQuick(previousSeconds: readonly number[]): boolean {
+  return previousSeconds.length >= 3 && previousSeconds.every((seconds) => seconds <= quickSeconds);
+}
+
 // A job's expected duration from its combinations' previous durations: they run side by side
 // (the longest), or one at a time in an exclusive group (their sum).
 export function jobDuration(combinationSeconds: readonly number[], exclusive: boolean): number {
