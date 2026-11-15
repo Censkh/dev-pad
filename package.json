@@ -14,6 +14,8 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./workflows/processor": "./workflows/processor.ts",
+    "./workflows/run": "./workflows/run.ts",
     "./expo": {
       "types": "./dist/expo.d.ts",
       "default": "./dist/expo.js"
@@ -21,6 +23,7 @@
   },
   "files": [
     "dist",
+    "workflows/*.ts",
     "README.md",
     "LICENSE",
     "docs/dashboard.png",
@@ -35,7 +38,8 @@
     "prepare": "tsc",
     "check": "tsc --noEmit && biome check .",
     "check:fix": "tsc --noEmit && biome check --write .",
-    "test": "node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs test/ports.mjs test/logfiles.mjs",
+    "test": "node --test test/smoke.mjs test/lifecycle.mjs test/expo.mjs test/ports.mjs test/logfiles.mjs test/workflow-history.mjs",
+    "test:workflows": "bun test workflows/test",
     "test:package-managers": "node --test test/package-managers.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
     "prepublishOnly": "node scripts/check-publish.mjs && npm run check && npm run build && npm test",
@@ -50,7 +54,8 @@
   "dependencies": {
     "@opentui/core": "0.5.11",
     "@opentui/react": "0.5.11",
-    "tsx": "^4.20.5"
+    "tsx": "^4.20.5",
+    "yaml": "^2.9.1"
   },
   "peerDependencies": {
     "react": ">=19.2.0 <20"

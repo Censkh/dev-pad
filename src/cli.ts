@@ -1,14 +1,24 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type Config, defaultLogDir, logFileName, runDashboard, validateConfig } from "./index.js";
+import { type Config, defaultLogDir, logFileName, runDashboard, validateConfig, workflowRunner } from "./index.js";
 import { logFileSize } from "./logfiles.js";
 
 const args = process.argv.slice(2);
-if (args.includes("--help") || args.includes("-h")) {
+if (args[0] === "workflows") {
+  const child = spawn("bun", [workflowRunner, ...args.slice(1)], { stdio: "inherit" });
+  child.on("error", (error) => {
+    console.error(`dev-pad workflows: ${error.message}`);
+    process.exitCode = 1;
+  });
+  child.on("exit", (code, signal) => {
+    process.exitCode = code ?? (signal === "SIGINT" ? 130 : 1);
+  });
+} else if (args.includes("--help") || args.includes("-h")) {
   console.log(
-    `dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\ndev-pad logs [service] [--lines N] [--follow]\n\nKeys: 1–9 select service, then r start/restart, q stop, k kill whatever listens on its ports, o open, Esc back.\nTop level: r restart active, c clear, ${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit.\nCustom service actions are shown in the dashboard.`,
+    `dev-pad / devpad / dpad [--config dev-pad.config.ts] [--plain] [--check]\ndev-pad logs [service] [--lines N] [--follow]\ndev-pad workflows [--check] <workflow.yml> [--job id] [--processors module]\n\nKeys: 1–9 select service, then r start/restart, q stop, k kill whatever listens on its ports, o open, Esc back.\nTop level: r restart active, c clear, ${process.platform === "darwin" ? "Cmd+C" : "Ctrl+C"} quit.\nCustom service actions are shown in the dashboard.`,
   );
 } else if (args.includes("--version")) {
   console.log(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
@@ -17,7 +27,9 @@ if (args.includes("--help") || args.includes("-h")) {
     const config = await loadConfig();
     if (args[0] === "logs") await printLogs(config, args.slice(1));
     else if (args.includes("--check"))
-      console.log(`${config.title}: ${config.services.map((service) => service.id).join(", ")}`);
+      console.log(
+        `${config.title}: ${[...config.services, ...(config.workflows ?? [])].map((entry) => entry.id).join(", ")}`,
+      );
     else await runDashboard(config, { plain: args.includes("--plain") });
   } catch (error) {
     console.error(`dev-pad: ${error instanceof Error ? error.message : String(error)}`);

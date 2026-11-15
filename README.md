@@ -5,7 +5,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/Censkh/dev-pad/ci.yml?branch=master)](https://github.com/Censkh/dev-pad/actions/workflows/ci.yml)
 
 One terminal for your local services. Start, restart, and stop processes; follow their
-logs; and add project-specific actions using a small TypeScript config.
+logs; and run project workflows using a small TypeScript config.
 
 Works with **Node, Bun, and Deno**. The commands `dev-pad`, `devpad`, and `dpad` are aliases.
 
@@ -115,6 +115,7 @@ The highlighted row and action bar show which service you are controlling.
 | Key | No service selected | Service selected |
 | --- | --- | --- |
 | `1`–`9` | Select a service | Select another service |
+| `w` | Open Workflows when available | Open Workflows when available |
 | `r` | Restart active services | Start or restart this service |
 | `q` | No action | Stop this service |
 | `k` | No action | Stop this service and kill whatever is listening on its ports; highlighted when it is busy |
@@ -156,6 +157,65 @@ A start refused because a port is held leaves the service **busy** rather than
 **failed**. Select it and press `k`, which leads the action bar while the service is busy,
 to free the port. dev-pad then starts the service if it is set to start automatically;
 otherwise press `r`. Services with `allowOccupiedPort` are never shown as busy.
+
+## Workflows
+
+Press **w** or click the workflow status in the bottom bar. The workflow list
+shows the latest run for each workflow, and the job graph shows its progress.
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Switch workflows |
+| `←` / `→` | Browse recent runs |
+| `j` / `k` | Move through the job list and show the selected logs |
+| `r` | Run the selected workflow locally |
+| `d` | Deploy locally when configured |
+| `q` | Cancel the selected active run when available |
+| `o` | Open the selected hosted run on GitHub |
+| `f` | Refresh runs |
+| `Esc` or `w` | Return to services |
+
+### Local runs
+
+Register a workflow in `dev-pad.config.ts` to run it locally. DevPad takes its
+display name from the workflow YAML, falling back to the filename.
+
+```ts
+workflows: [
+  {
+    id: "checks",
+    file: ".github/workflows/app.yml",
+    processors: "scripts/local-workflow-app.ts",
+    jobs: ["app"],
+  },
+],
+```
+
+Click a job to see its step output as the run progresses. Local job logs,
+results, and artifacts remain under `.local/workflows`, including for runs started
+with the CLI. The final log line gives the run directory.
+
+The runner requires Bun and GNU `timeout` (`gtimeout` on macOS). It reads the workflow
+at the selected Git commit and gives each job a separate checkout. The workflow
+defines dependencies, conditions, and matrices. Local TypeScript processors implement
+the shell steps, and DevPad implements a subset of common actions. Run only workflows
+and processors you trust. To show **Deploy** (**d**) alongside **Run checks** (**r**), add `deployment: { keychainService: "project-workflows" }`. Deployment runs the
+whole workflow. Mark jobs that publish or mutate external state in the processor
+module's `deployJobs` export, including jobs that read secrets from top-level workflow
+environment variables.
+
+Without the dashboard, run:
+
+```sh
+dev-pad workflows --check .github/workflows/app.yml --job app --processors scripts/local-workflow-app.ts
+dev-pad workflows .github/workflows/app.yml --job app --processors scripts/local-workflow-app.ts
+```
+
+### GitHub Actions
+
+With a GitHub remote and an authenticated `gh` CLI, DevPad discovers hosted workflows
+and combines local and GitHub runs for the same workflow file. GitHub job logs
+are available after the run completes. Set `githubActions: false` to turn off discovery.
 
 ## Custom actions and live status
 
@@ -205,6 +265,28 @@ Use `config.tick(ctx)` for periodic asynchronous work rather than doing I/O in
 `status()`. For site switching, an action can update shared state, while `url`,
 `env`, and `status` functions read it on demand.
 
+### Independent launch targets
+
+Use `ctx.run(command, { target })` for a finite launch command such as opening a
+native app. A service can track multiple launches alongside its main process.
+DevPad displays each target's status and marks the service **partial** when
+one target starts and another fails. Set `processLabel` to name the main process.
+
+```ts
+{
+  key: "i",
+  label: "iOS",
+  run: (ctx) => ctx.run(["bun", "run", "dev:ios"], {
+    target: { service: "mobile", id: "ios", label: "iOS" },
+  }),
+}
+```
+
+Targets show **starting** until their launch command exits, then **started** or
+**failed**. A retry replaces only that target's result. A **started** result records
+a successful launch in the current dashboard session. Running apps are managed by
+the simulator or device.
+
 ## Expo
 
 `dev-pad/expo` builds an Expo service with global `i` (iOS) and `a` (Android) actions.
@@ -247,6 +329,7 @@ Commands are argument arrays and do not run through a shell automatically.
 | Option | Behavior |
 | --- | --- |
 | `command` | Executable and arguments for the long-running process |
+| `processLabel` | Label for the main process when independent launch targets are shown |
 | `cwd` | Working directory, relative to the project directory |
 | `env` | Extra environment variables, or a function returning them; inherits the current environment |
 | `url` | URL string or function; enables the selected service's open action |
@@ -279,7 +362,7 @@ terminals can read service output without the dashboard:
 | `supervisor.log` | dev-pad's own messages, such as starts, busy ports and errors |
 | `all.log` | Every source interleaved, in the order dev-pad received it |
 | `<source>.log` | A utility command's output, named after its `ctx.run` / `ctx.log` source |
-| `README.md` | Each service's status, URL, ports and log file, and whether dev-pad is running |
+| `README.md` | Each service's status, launch targets, URL, ports and log file, and whether dev-pad is running |
 
 Each line reads `2026-10-25T09:41:07.123Z [portal] message`, with terminal colours and
 spinner redraws removed, so `tail -n 100 .dev-pad/logs/portal.log` or `grep` work as
@@ -345,7 +428,7 @@ not know `ports`.
 | `ctx.log(source, message)` | Append a message to shared logs |
 | `ctx.write(id, input)` | Send input to a running service; returns false if it is not running |
 
-`ctx.run` options are `source`, `cwd`, `env`, and `quiet`. Set `quiet: true` to
+`ctx.run` options are `source`, `cwd`, `env`, `quiet`, and `target`. Set `quiet: true` to
 capture utility output without adding it to the dashboard's logs.
 
 ## Runtime and CLI options
@@ -397,8 +480,9 @@ python3 test/ui.py
 
 The terminal tests require Python 3 on POSIX, plus the runtimes under test. Run
 `python3 test/ui.py bun` (or `node` / `deno`) to test one renderer.
-GitHub CI checks and builds once, then tests Node 22/24/26, Bun 1.3/latest, and
+GitHub CI checks and builds once, then tests Node 22/24/26, Bun 1.4.2/latest, and
 Deno 2.1.5/latest, including keyboard input, rendering, and process cleanup.
+Run `bun run test:workflows` for the local workflow runner and workflow dashboard tests.
 
 Releases are automated with [Changesets](https://github.com/changesets/changesets).
 Add one with `bunx changeset add` when a change should be a minor or major

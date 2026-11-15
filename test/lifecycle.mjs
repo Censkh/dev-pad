@@ -193,4 +193,79 @@ if (process.argv[2] === "descendant") {
         await rm(directory, { recursive: true, force: true });
       }
     });
+  test("launch targets preserve independent outcomes alongside a stopped web process", async () => {
+    const dashboard = createDashboard({
+      title: "targets",
+      logFiles: false,
+      services: [{ id: "app", name: "App", processLabel: "Web", ports: false, start: async () => {} }],
+    });
+    const ios = { service: "app", id: "ios", label: "iOS" };
+    const android = { service: "app", id: "android", label: "Android" };
+    try {
+      const starting = dashboard.ctx.run([...runtime, "-e", "setTimeout(() => console.log('launched'), 100)"], {
+        target: ios,
+      });
+      assert.deepEqual(dashboard.snapshot().services[0].targets, [{ id: "ios", label: "iOS", status: "starting" }]);
+      await assert.rejects(dashboard.ctx.run(command("exit", "0"), { target: ios }), { code: "TARGET_STARTING" });
+      assert.equal(await starting, "launched");
+      assert.equal(dashboard.snapshot().services[0].status, "started");
+      assert.equal(dashboard.snapshot().services[0].processStatus, "not started");
+      await assert.rejects(dashboard.ctx.run(command("exit", "7"), { target: android }), {
+        code: "COMMAND_FAILED",
+        exitCode: 7,
+      });
+      assert.equal(dashboard.snapshot().services[0].status, "partial");
+      assert.deepEqual(dashboard.snapshot().services[0].targets, [
+        { id: "ios", label: "iOS", status: "started" },
+        { id: "android", label: "Android", status: "failed" },
+      ]);
+      await dashboard.ctx.run(command("exit", "0"), { target: android });
+      await dashboard.ctx.start("app");
+      assert.equal(dashboard.snapshot().services[0].status, "ready");
+      assert.equal(dashboard.snapshot().services[0].processStatus, "ready");
+      await dashboard.ctx.stop("app");
+      assert.equal(dashboard.snapshot().services[0].status, "started");
+      assert.equal(dashboard.snapshot().services[0].processStatus, "stopped");
+      assert.deepEqual(
+        dashboard.snapshot().services[0].targets.map(({ id, status }) => ({ id, status })),
+        [
+          { id: "ios", status: "started" },
+          { id: "android", status: "started" },
+        ],
+      );
+      await dashboard.ctx.run(command("exit", "0"));
+      assert.equal(dashboard.snapshot().services[0].targets.length, 2);
+    } finally {
+      await dashboard.shutdown();
+    }
+  });
+
+  test("shutdown cancels an in-flight target and terminates its launcher", async () => {
+    const dashboard = createDashboard({
+      title: "cancel target",
+      logFiles: false,
+      services: [{ id: "app", name: "App", ports: false, start: async () => {} }],
+    });
+    const pending = dashboard.ctx
+      .run([...runtime, "-e", "console.log(process.pid); setInterval(() => {}, 1000)"], {
+        target: { service: "app", id: "ios", label: "iOS" },
+      })
+      .catch(() => undefined);
+    try {
+      await waitFor(
+        () => dashboard.snapshot().logs.some(({ source, message }) => source === "app" && /^\d+$/.test(message)),
+        "launcher pid",
+      );
+      const pid = Number(
+        dashboard.snapshot().logs.find(({ source, message }) => source === "app" && /^\d+$/.test(message)).message,
+      );
+      await dashboard.shutdown();
+      await pending;
+      assert.equal(dashboard.snapshot().services[0].targets[0].status, "cancelled");
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      await dashboard.shutdown();
+      await pending;
+    }
+  });
 }

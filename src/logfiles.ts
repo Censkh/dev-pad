@@ -9,7 +9,14 @@ export type LogFileOptions = {
   /** Size in bytes at which a file moves to `<name>.previous.log` and starts again. Defaults to 2 MB. */
   maxBytes?: number;
 };
-export type LogFileService = { id: string; name: string; status: string; url: string; ports: readonly number[] };
+export type LogFileService = {
+  id: string;
+  name: string;
+  status: string;
+  detail?: string;
+  url: string;
+  ports: readonly number[];
+};
 
 export const defaultLogDir = join(".dev-pad", "logs");
 export const combinedLog = "all";
@@ -140,7 +147,7 @@ export function createLogFiles(
           "| --- | --- | --- | --- | --- |",
           ...services.map(
             (service) =>
-              `| ${cell(`${service.name} (\`${service.id}\`)`)} | ${cell(running ? service.status : "not running")} | ${cell(service.url)} | ${cell(service.ports.join(", "))} | ${logFileName(service.id)}.log |`,
+              `| ${cell(`${service.name} (\`${service.id}\`)`)} | ${cell(running ? (service.detail ? `${service.status}: ${service.detail}` : service.status) : "not running")} | ${cell(service.url)} | ${cell(service.ports.join(", "))} | ${logFileName(service.id)}.log |`,
           ),
           "",
           `Also: \`supervisor.log\` (dev-pad's own messages) and \`${combinedLog}.log\` (every source, interleaved).`,

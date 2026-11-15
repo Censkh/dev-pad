@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { localWorkflowRuns } from "../dist/workflow-history.js";
+
+test("local runs include a run still going from the command line, but not one whose runner died", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "dev-pad-history-"));
+  // A process that ended, so its pid names no runner.
+  const ended = spawn(process.execPath, ["-e", ""]);
+  await new Promise((resolve) => ended.on("exit", resolve));
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repository });
+    await mkdir(join(repository, ".github/workflows"), { recursive: true });
+    await writeFile(join(repository, ".github/workflows/deploy.yml"), "name: Deploy\n");
+    const runs = join(repository, ".local/workflows/Owner/deploy/main/runs");
+    const save = async (id, state, pid) => {
+      await mkdir(join(runs, id), { recursive: true });
+      const status = {
+        version: 1,
+        id,
+        pid,
+        workflowPath: ".github/workflows/deploy.yml",
+        branch: "main",
+        state,
+        startedAt: `2026-01-01T00:00:0${id.at(-1)}.000Z`,
+        args: [".github/workflows/deploy.yml"],
+        config: { deploy: false },
+        jobs: [
+          { id: "checks", name: "Checks", state: "running", combinations: [{ key: "checks", log: "checks.log" }] },
+        ],
+      };
+      await writeFile(join(runs, id, "status.json"), JSON.stringify(status));
+    };
+    await save("run-1", "passed", ended.pid);
+    await save("run-2", "running", ended.pid);
+    await save("run-3", "running", process.pid);
+
+    const listed = await localWorkflowRuns(repository, { id: "deploy", file: ".github/workflows/deploy.yml" });
+    assert.deepEqual(
+      listed.map(({ id, state, pid }) => ({ id, state, pid })),
+      [
+        { id: "run-3", state: "running", pid: process.pid },
+        { id: "run-1", state: "passed", pid: undefined },
+      ],
+    );
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
