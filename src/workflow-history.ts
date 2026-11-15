@@ -59,20 +59,50 @@ function matchWorkflow(
   return { partial: [...requested].sort() };
 }
 
+// Where a workflow entry's runs are saved: `.local/workflows/<repository>/<workflow>/<branch>/runs`.
+async function locate(cwd: string, config: LocalWorkflow) {
+  const path = await realpath(resolve(cwd, config.file));
+  const gitOptions = { cwd: dirname(path) };
+  const [root, branchResult] = await Promise.all([
+    git("git", ["rev-parse", "--show-toplevel"], gitOptions),
+    git("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], gitOptions).catch(() => undefined),
+  ]);
+  const repository = root.stdout.trim();
+  return {
+    repository,
+    branch: branchResult?.stdout.trim() || "main",
+    workflowPath: relative(repository, path),
+    stateRoot: join(repository, ".local/workflows"),
+    workflow: basename(path).replace(/\.ya?ml$/, ""),
+  };
+}
+
+/**
+ * The newest saved run directory of each repository state for this entry's workflow and branch,
+ * from directory listings alone: it changes when a run starts, wherever it was started, so the
+ * dashboard can read the runs again only then.
+ */
+export async function localWorkflowRunsStamp(cwd: string, config: LocalWorkflow) {
+  try {
+    const { stateRoot, workflow, branch } = await locate(cwd, config);
+    const newest = await Promise.all(
+      (await directories(stateRoot)).map(async (entry) => {
+        const names = (await directories(join(stateRoot, entry.name, workflow, branch, "runs"))).map(
+          ({ name }) => name,
+        );
+        return `${entry.name}/${names.sort().at(-1) ?? ""}`;
+      }),
+    );
+    return newest.sort().join("\n");
+  } catch {
+    return "";
+  }
+}
+
 /** The saved runs of one workflow entry; `entries` are all the dashboard's entries (see matchWorkflow). */
 export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entries: readonly LocalWorkflow[] = []) {
   try {
-    const path = await realpath(resolve(cwd, config.file));
-    const gitOptions = { cwd: dirname(path) };
-    const [root, branchResult] = await Promise.all([
-      git("git", ["rev-parse", "--show-toplevel"], gitOptions),
-      git("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], gitOptions).catch(() => undefined),
-    ]);
-    const repository = root.stdout.trim();
-    const branch = branchResult?.stdout.trim() || "main";
-    const workflowPath = relative(repository, path);
-    const stateRoot = join(repository, ".local/workflows");
-    const workflow = basename(path).replace(/\.ya?ml$/, "");
+    const { branch, workflowPath, stateRoot, workflow } = await locate(cwd, config);
     const others = entries.filter(
       (entry) => entry !== config && entry.id !== config.id && resolve(cwd, entry.file) === resolve(cwd, config.file),
     );

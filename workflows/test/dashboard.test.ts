@@ -200,6 +200,53 @@ export const processors = {
   25_000,
 );
 
+test("a run started outside DevPad shows on a workflow that isn't selected and had nothing running", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "dev-pad-new-run-"));
+  Bun.spawnSync(["git", "init", "-qb", "main"], { cwd });
+  for (const name of ["first", "second"]) writeFileSync(join(cwd, `${name}.yml`), "jobs: {}\n");
+  const dashboard = createDashboard({
+    title: "New runs",
+    cwd,
+    services: [],
+    workflows: [
+      { id: "first", file: "first.yml" },
+      { id: "second", file: "second.yml" },
+    ],
+  });
+  try {
+    await dashboard.start();
+    await dashboard.key("1");
+    const second = () => dashboard.snapshot().services.find((service) => service.id === "second")!;
+    expect(second().workflowSource).toBeUndefined();
+    // As a command-line runner writes it: a new run directory with its status file.
+    const run = join(cwd, ".local/workflows/Owner/second/main/runs/run-1");
+    mkdirSync(run, { recursive: true });
+    writeFileSync(
+      join(run, "status.json"),
+      JSON.stringify({
+        version: 1,
+        id: "run-1",
+        workflowPath: "second.yml",
+        branch: "main",
+        state: "passed",
+        startedAt: new Date().toISOString(),
+        args: ["second.yml"],
+        config: { deploy: false },
+        jobs: [],
+      }),
+    );
+    for (let attempt = 0; attempt < 60 && second().workflowSource !== "Local"; attempt++) {
+      await dashboard.health();
+      await Bun.sleep(100);
+    }
+    expect(second().workflowSource).toBe("Local");
+    expect(second().status).toBe("passed");
+  } finally {
+    await dashboard.shutdown();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test.skipIf(process.platform === "win32")("merges hosted and local history and opens the newest run", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "dev-pad-merged-runs-"));
   const path = process.env.PATH;

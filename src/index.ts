@@ -19,7 +19,7 @@ import type { LogEntry } from "./logs.js";
 import { type CommandRunner, killPortListeners, listeningPids, portListeners, servicePorts } from "./ports.js";
 import { launch, type RunningProcess, terminate } from "./process.js";
 import type { Snapshot, WorkflowJob } from "./ui.js";
-import { localWorkflowRuns, readWorkflowLog } from "./workflow-history.js";
+import { localWorkflowRuns, localWorkflowRunsStamp, readWorkflowLog } from "./workflow-history.js";
 
 export { defaultLogDir, type LogFileOptions, logFileName } from "./logfiles.js";
 export {
@@ -320,6 +320,8 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
     localStartedAt?: string;
     localRunOrder?: number;
     localRuns?: SavedWorkflow[];
+    /** The newest saved run directories when the runs were last read (localWorkflowRunsStamp). */
+    localRunsStamp?: string;
     selectedRunId?: string;
     savedLogs?: { id: string; logs: LogEntry[] };
     githubRuns?: GitHubRun[];
@@ -817,8 +819,12 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
 
   const refreshLocalWorkflows = async (service: DashboardService) => {
     if (!service.local) return;
-    const runs = await localWorkflowRuns(cwd, service.local, config.workflows);
+    const [stamp, runs] = await Promise.all([
+      localWorkflowRunsStamp(cwd, service.local),
+      localWorkflowRuns(cwd, service.local, config.workflows),
+    ]);
     if (closing) return;
+    state(service.id).localRunsStamp = stamp;
     state(service.id).localRuns = runs;
     if (selectedId === service.id) syncSelectedRun(service);
   };
@@ -1284,17 +1290,21 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
           }
         }
         // Runs started outside DevPad keep their status file current; read it while one is going,
-        // and for the workflow on screen, so they update as DevPad's own runs do.
+        // and for the workflow on screen, so they update as DevPad's own runs do. Every other
+        // workflow is read again only when a new run directory appears, wherever it was started.
         if (Date.now() - lastLocalPoll >= 2_000) {
           lastLocalPoll = Date.now();
           await Promise.all(
-            workflows
-              .filter(
-                (service) =>
-                  service.local &&
-                  (service.id === selectedId || state(service.id).localRuns?.some((run) => run.state === "running")),
+            workflows.map(async (service) => {
+              if (!service.local) return;
+              const s = state(service.id);
+              if (
+                service.id === selectedId ||
+                s.localRuns?.some((run) => run.state === "running") ||
+                (await localWorkflowRunsStamp(cwd, service.local)) !== s.localRunsStamp
               )
-              .map(refreshLocalWorkflows),
+                await refreshLocalWorkflows(service);
+            }),
           );
         }
         await config.tick?.(ctx);
