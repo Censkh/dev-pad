@@ -63,6 +63,7 @@ import {
   UnknownContextError,
   type Value,
 } from "./expressions";
+import { MachineSlots } from "./machine-slots";
 import { PortReservations } from "./ports";
 import type { NeedResult, Processor, Processors, RunInfo, StepRun } from "./processor";
 import { StepFailure } from "./processor";
@@ -772,6 +773,7 @@ async function runCombination(
     GITHUB_RUN_ATTEMPT: "1",
     GITHUB_JOB: id,
     RUNNER_TEMP: temp,
+    DEVPAD_JOB_CPUS: String(jobCpus),
     RUNNER_OS: runnerOS,
     RUNNER_ARCH: runner.arch,
     RUNNER_ENVIRONMENT: "local",
@@ -1198,13 +1200,21 @@ writeStatusNow();
 // health check, 5 s test timeouts) failed under the load. Waiting combinations start in the order
 // schedule.ts gives, the one holding up the most work first; exclusive groups (the processors
 // module's `exclusive`) never run two at once.
-const slots = Math.max(
-  1,
-  Number(
-    single["--jobs"] ??
-      Math.max(2, Math.min(Math.floor(availableParallelism() / 4), Math.floor(totalmem() / 8 / 1024 ** 3))),
-  ),
+const defaultJobs = Math.max(
+  2,
+  Math.min(Math.floor(availableParallelism() / 4), Math.floor(totalmem() / 8 / 1024 ** 3)),
 );
+const slots = Math.max(1, Number(single["--jobs"] ?? defaultJobs));
+// The same number again, shared by every runner using this tool cache (machine-slots.ts), as a
+// project's workflows do: runs going at once take turns for these instead of each starting its own
+// jobs on top of the others'. DEVPAD_MACHINE_JOBS sets it.
+const machineJobs = Math.max(1, Number(process.env.DEVPAD_MACHINE_JOBS ?? defaultJobs));
+const machineSlotsDir = join(toolCache, "machine-slots");
+mkdirSync(machineSlotsDir, { recursive: true });
+const machineSlots = new MachineSlots(machineSlotsDir, machineJobs);
+// A job's share of the CPUs when every machine slot is busy, which its steps get as DEVPAD_JOB_CPUS
+// to size their own parallelism (test workers, containers) instead of assuming the whole machine.
+const jobCpus = Math.max(1, Math.floor(availableParallelism() / machineJobs));
 let freeSlots = slots;
 const busyGroups = new Set<number>();
 let waiters: (Waiter & { start: () => void })[] = [];
@@ -1228,9 +1238,11 @@ async function withSlot(jobId: string, seconds: number, chain: number, work: () 
     waiters.push({ seconds, chain, groups, start });
     startWaiters();
   });
+  const release = await machineSlots.acquire(`${runId}/${jobId}`, () => cancelled);
   try {
-    await work();
+    if (release) await work();
   } finally {
+    release?.();
     freeSlots++;
     for (const group of groups) busyGroups.delete(group);
     startWaiters();
