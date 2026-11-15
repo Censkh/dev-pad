@@ -6,7 +6,14 @@ import { basename, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify, stripVTControlCharacters } from "node:util";
 import { parseDocument } from "yaml";
-import { type GitHubRun, type GitHubWorkflow, githubActions, githubError, githubStatus } from "./github-actions.js";
+import {
+  type GitHubRun,
+  type GitHubWorkflow,
+  githubActions,
+  githubError,
+  githubJobDependencies,
+  githubStatus,
+} from "./github-actions.js";
 import { createLogFiles, defaultLogDir, type LogFileOptions, type LogFiles } from "./logfiles.js";
 import type { LogEntry } from "./logs.js";
 import { type CommandRunner, killPortListeners, listeningPids, portListeners, servicePorts } from "./ports.js";
@@ -722,8 +729,12 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
           s.githubDetail?.id !== run.id ||
           s.githubDetail.details.state !== run.status
         ) {
-          const jobs = await client.jobs(run.remote);
+          const [jobs, definitions] = await Promise.all([
+            client.jobs(run.remote),
+            client.definition(workflow.path, run.remote.headSha),
+          ]);
           if (closing) return;
+          const needs = githubJobDependencies(jobs ?? [], definitions);
           s.githubDetail = {
             id: run.id,
             details: {
@@ -732,7 +743,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
                 id: String(job.databaseId),
                 name: job.name,
                 state: githubStatus(job),
-                needs: [],
+                needs: needs.get(String(job.databaseId)) ?? [],
                 logKeys: [String(job.databaseId)],
               })),
               stages: (jobs ?? [])

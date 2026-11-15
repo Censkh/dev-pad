@@ -244,12 +244,14 @@ const args = process.argv.slice(2);
 const hostedRunAdded = await Bun.file(process.cwd() + "/hosted-run-added").exists();
 const run = (databaseId, startedAt) => ({
   databaseId, workflowDatabaseId: 7, startedAt, number: databaseId, attempt: 1,
-  headBranch: "main", status: "completed", conclusion: "success",
+  headBranch: "main", headSha: "dd77b33", status: "completed", conclusion: "success",
   url: "https://github.com/fixture/project/actions/runs/" + databaseId
 });
 if (args[0] === "--version") console.log("gh fixture");
 else if (args[0] === "workflow" && args[1] === "list")
   console.log(JSON.stringify([{ id: 7, name: "Deploy", path: ".github/workflows/deploy.yml" }]));
+else if (args[0] === "api" && args.includes("repos/{owner}/{repo}/contents/.github/workflows/deploy.yml") && args.includes("ref=dd77b33"))
+  console.log(["jobs:", "  build:", "    name: Build", "  test:", "    name: Test", "    needs: build"].join("\\n"));
 else if (args[0] === "workflow" && args[1] === "run") {
   await Bun.write(process.cwd() + "/dispatched", JSON.stringify(args));
 } else if (args[0] === "run" && args[1] === "list") {
@@ -258,7 +260,11 @@ else if (args[0] === "workflow" && args[1] === "run") {
     : [run(8, "2026-01-01T00:00:00Z")]));
 } else if (args[0] === "run" && args.includes("--log")) console.log("hosted output " + args[2]);
 else if (args[0] === "run" && args[1] === "view")
-  console.log(JSON.stringify({ jobs: [{ databaseId: 21, name: "Build", status: "completed", conclusion: "success", steps: [] }] }));
+  console.log(JSON.stringify({ jobs: [
+    { databaseId: 21, name: "Build (macOS)", status: "completed", conclusion: "success", steps: [] },
+    { databaseId: 22, name: "Build (Linux)", status: "completed", conclusion: "success", steps: [] },
+    { databaseId: 23, name: "Test", status: "completed", conclusion: "success", steps: [] },
+  ] }));
 else process.exit(1);
 `,
     { mode: 0o755 },
@@ -288,7 +294,11 @@ else process.exit(1);
     await dashboard.key("right");
     await until((snapshot) => snapshot.logs.some(({ message }) => message === "hosted output 8"));
     expect(dashboard.snapshot().workflowRunId).toBe("github:8:1");
-    expect(dashboard.snapshot().workflowJobs?.map(({ id }) => id)).toEqual(["21"]);
+    expect(dashboard.snapshot().workflowJobs?.map(({ id, needs }) => ({ id, needs }))).toEqual([
+      { id: "21", needs: [] },
+      { id: "22", needs: [] },
+      { id: "23", needs: ["21", "22"] },
+    ]);
     await dashboard.key("left");
     expect(dashboard.snapshot().workflowRunId).toBe("local:local-fixture");
     expect(dashboard.snapshot().logs.map(({ message }) => message)).toEqual(["[checks] local output"]);
