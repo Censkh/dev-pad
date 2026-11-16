@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1
+
+### Patch Changes
+
+- Changes merged to master.
+
 ## 0.12.0
 
 ### Minor Changes
