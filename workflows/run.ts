@@ -108,6 +108,14 @@ function gitOutput(cwd: string, ...args: string[]) {
   return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
 }
 
+/**
+ * A secret the processors module provides: a function that reads it (a logged-in CLI's token, a key
+ * made for the run), or that with `refreshSeconds`, after which a step reads it again before it runs.
+ */
+export type EnvProvider =
+  | (() => string | Promise<string>)
+  | { read: () => string | Promise<string>; refreshSeconds?: number };
+
 type Loaded = {
   path: string;
   file: string;
@@ -124,6 +132,9 @@ type Loaded = {
   preserve: string[];
   // The processors module, when there is one.
   processorsModule?: string;
+  // Where the workflow's secrets come from, by name (`secrets.<NAME>`): a function that reads the
+  // value, or one with how often to read it again (EnvProvider).
+  env: Record<string, EnvProvider>;
   // Jobs whose combinations start as soon as their needs allow, without waiting for the machine's
   // load: long work on the run's critical path, such as a deploying run's build, which otherwise
   // waits behind the tests that fill the machine although nothing it does depends on them.
@@ -177,6 +188,7 @@ async function load(
         optionalSecrets?: string[];
         preserve?: string[];
         startFirst?: string[];
+        env?: Record<string, EnvProvider>;
       })
     : {};
   const processors: Processors = imported.processors ?? {};
@@ -200,6 +212,7 @@ async function load(
     preserve: imported.preserve ?? [],
     startFirst: imported.startFirst ?? [],
     processorsModule: existsSync(module) ? module : undefined,
+    env: imported.env ?? {},
   };
 }
 
@@ -351,6 +364,11 @@ function check(loaded: Loaded, selected: Set<string>, partial = false): string[]
       if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: exclusive job '${id}' doesn't exist`);
   for (const id of loaded.deployJobs)
     if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: deploy job '${id}' doesn't exist`);
+  const secretNames = new Set(
+    [...readFileSync(loaded.path, "utf8").matchAll(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
+  );
+  for (const name of Object.keys(loaded.env))
+    if (!secretNames.has(name)) errors.push(`${loaded.file}: env provides '${name}', which no step reads as a secret`);
   for (const id of loaded.startFirst)
     if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: start-first job '${id}' doesn't exist`);
   for (const path of loaded.preserve)
@@ -449,15 +467,41 @@ mkdirSync(toolCache, { recursive: true });
 const timeoutBin = Bun.which("gtimeout") ?? Bun.which("timeout") ?? "";
 if (!timeoutBin) throw new Error("Needs GNU timeout: brew install coreutils");
 
-// Secrets, only when deploying, and all of them up front so a deploy never stops half way.
+// Secrets, only when deploying, and all of them up front so a deploy never stops half way: each
+// from the processors module's `env` (Loaded.env) when it provides it, else the environment or the
+// Keychain. One provided with `refreshSeconds` is read again before a step once its value is that
+// old, so a run longer than a token's life still has a live one.
 const secrets: Record<string, string> = {};
+const secretValues: string[] = [];
+const secretReadAt = new Map<string, number>();
+const remember = (value: string) => {
+  if (value.length >= 4 && !secretValues.includes(value)) secretValues.push(value);
+};
+const readProvided = async (name: string) => {
+  const provider = loaded.env[name]!;
+  const read = typeof provider === "function" ? provider : provider.read;
+  const value = String((await read()) ?? "").trim();
+  secretReadAt.set(name, Date.now());
+  remember(value);
+  return value;
+};
+// Before a step: provided secrets due to be read again are, keeping their value if a read fails.
+async function refreshSecrets() {
+  for (const [name, provider] of Object.entries(loaded.env)) {
+    const seconds = typeof provider === "function" ? undefined : provider.refreshSeconds;
+    if (seconds === undefined || !(name in secrets)) continue;
+    if (Date.now() - (secretReadAt.get(name) ?? 0) < seconds * 1000) continue;
+    const value = await readProvided(name).catch(() => "");
+    if (value) secrets[name] = value;
+  }
+}
 if (deploy) {
   const names = new Set(
     [...readFileSync(loaded.path, "utf8").matchAll(/\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
   );
   const missing: string[] = [];
   for (const name of names) {
-    let value = process.env[name];
+    let value = name in loaded.env ? await readProvided(name) : process.env[name];
     if (!value && keychainService && process.platform === "darwin") {
       const result = Bun.spawnSync(["security", "find-generic-password", "-s", keychainService, "-a", name, "-w"], {
         stdout: "pipe",
@@ -473,7 +517,7 @@ if (deploy) {
     process.exit(1);
   }
 }
-const secretValues = Object.values(secrets).filter((value) => value.length >= 4);
+for (const value of Object.values(secrets)) remember(value);
 const redact = (text: string) => secretValues.reduce((out, value) => out.split(value).join("***"), text);
 
 const recordPath = join(stateDir, "last-success.json");
@@ -848,6 +892,7 @@ async function runCombination(
       continue;
     }
     const processor = processorFor(loaded, id, step)!;
+    if (deploy) await refreshSecrets();
     const stepEnv = { ...env, ...stringMap(evaluateValue(step.env ?? {}, context)) };
     const action = step.uses && !registeredProcessor(loaded, id, step) ? actions[actionName(step.uses)] : undefined;
     const inputs = action?.literalInputs

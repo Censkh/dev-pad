@@ -546,6 +546,73 @@ test.skipIf(!canRun)(
   120_000,
 );
 
+test.skipIf(!canRun)(
+  "a secret the processors module provides is read up front, and again before a step once it is old",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "secret-env-"));
+    const source = join(root, "repo");
+    mkdirSync(join(source, ".github/workflows"), { recursive: true });
+    // Each step of the deploying job reads the token; the provider hands out a new one each time.
+    writeFileSync(
+      join(source, ".github/workflows/token.yml"),
+      `
+jobs:
+  publish:
+    steps:
+      - name: First
+        env:
+          TOKEN: \${{ secrets.TOKEN }}
+      - name: Second
+        env:
+          TOKEN: \${{ secrets.TOKEN }}
+`,
+    );
+    const seen = join(root, "seen");
+    writeFileSync(
+      join(root, "token.ts"),
+      `import { appendFileSync } from "node:fs";
+let reads = 0;
+export const env = { TOKEN: { read: async () => \`token-\${++reads}\`, refreshSeconds: 0 } };
+const note = (step) => appendFileSync(${JSON.stringify(seen)}, step.env.TOKEN + "\\n");
+export const processors = { First: note, Second: note };`,
+    );
+    git(source, "init", "-q", "-b", "main");
+    git(source, "add", ".");
+    git(source, "commit", "-qm", "token");
+    const result = Bun.spawnSync(
+      [
+        "bun",
+        runner,
+        join(source, ".github/workflows/token.yml"),
+        "--processors",
+        join(root, "token.ts"),
+        "--state",
+        join(root, "state"),
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(result.exitCode).toBe(0);
+    // Read up front (token-1), then again before each step, as its value was already old.
+    expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual(["token-2", "token-3"]);
+    rmSync(root, { recursive: true, force: true });
+  },
+  60_000,
+);
+
+test.skipIf(!canRun)("--check rejects a provided secret no step reads", () => {
+  writeFileSync(
+    join(dir, "stray-env.ts"),
+    `export const env = { NOBODY: () => "x" };
+export const processors = { Hold: async () => {}, Quick: async () => {} };`,
+  );
+  const result = Bun.spawnSync(
+    ["bun", runner, "--check", join(repo, ".github/workflows/turns.yml"), "--processors", join(dir, "stray-env.ts")],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("env provides 'NOBODY'");
+});
+
 describe.skipIf(!canRun)("runs going at once", () => {
   // busy: the machine's CPUs always count as busier than the limit, so only a run's first
   // combination starts while another of its own runs.
