@@ -485,7 +485,8 @@ const readProvided = async (name: string) => {
   remember(value);
   return value;
 };
-// Before a step: provided secrets due to be read again are, keeping their value if a read fails.
+// Before a step of a job that uses secrets: provided secrets due to be read again are, keeping
+// their value if a read fails.
 async function refreshSecrets() {
   for (const [name, provider] of Object.entries(loaded.env)) {
     const seconds = typeof provider === "function" ? undefined : provider.refreshSeconds;
@@ -892,7 +893,8 @@ async function runCombination(
       continue;
     }
     const processor = processorFor(loaded, id, step)!;
-    if (deploy) await refreshSecrets();
+    // Only a job that uses secrets reads them again: a provider may wait for a fresh value.
+    if (deploy && deployOnly(loaded, id, job)) await refreshSecrets();
     const stepEnv = { ...env, ...stringMap(evaluateValue(step.env ?? {}, context)) };
     const action = step.uses && !registeredProcessor(loaded, id, step) ? actions[actionName(step.uses)] : undefined;
     const inputs = action?.literalInputs
