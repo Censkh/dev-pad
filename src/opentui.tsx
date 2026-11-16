@@ -5,6 +5,7 @@ import process from "node:process";
 import { createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { jobDuration } from "./durations.js";
 import {
   cleanText,
   footerActions,
@@ -430,6 +431,7 @@ export async function mountUI(
                     }}
                   >
                     {marker} {cleanText(job.name)}
+                    {jobDuration(job) ? ` · ${jobDuration(job)}` : ""}
                   </text>
                 );
               })}
@@ -481,7 +483,7 @@ export async function mountUI(
                             {marker} {cleanText(job.name)}
                           </text>
                           <text height={1} truncate fg={colors.muted}>
-                            {job.note ? `${job.state} · ${job.note}` : job.state}
+                            {[job.state, jobDuration(job), job.note].filter(Boolean).join(" · ")}
                           </text>
                         </box>
                       );

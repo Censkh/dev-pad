@@ -1,6 +1,7 @@
 import process from "node:process";
 import { emitKeypressEvents, type Key } from "node:readline";
 import { stripVTControlCharacters } from "node:util";
+import { jobDuration } from "./durations.js";
 
 export type StatusItem = { label: string; value: string; tone?: string };
 export type WorkflowJob = {
@@ -11,6 +12,9 @@ export type WorkflowJob = {
   note?: string;
   needs: string[];
   logKeys: string[];
+  /** When the job's first combination started and, once the job is done, its last one finished. */
+  startedAt?: string;
+  finishedAt?: string;
 };
 export type Snapshot = {
   title: string;
@@ -284,7 +288,7 @@ export async function mountUI(
       const { marker, tone } = statusAppearance(job.state, pulse);
       const dependencies = job.needs.length ? ` ← ${job.needs.join(", ")}` : "";
       commands.push([
-        ` ${job.id === snapshot.selectedJob ? `>${job.state === "running" ? marker : ""}` : marker} ${job.name}${dependencies} · ${job.state}${job.note ? ` · ${job.note}` : ""}`,
+        ` ${job.id === snapshot.selectedJob ? `>${job.state === "running" ? marker : ""}` : marker} ${job.name}${dependencies} · ${[job.state, jobDuration(job), job.note].filter(Boolean).join(" · ")}`,
         tone,
       ]);
     }

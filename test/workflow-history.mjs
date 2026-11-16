@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { formatAgo, formatDuration, jobDuration } from "../dist/durations.js";
 import { localWorkflowRuns, runOptions } from "../dist/workflow-history.js";
 
 test("local runs include a run still going from the command line, but not one whose runner died", async () => {
@@ -123,4 +124,72 @@ test("a run's options read as words, without the workflow file or the runner's w
     ]),
     "jobs setup, cockroachdb · only name=workers · since origin/main · every job · no fail-fast · at 05d5196b7",
   );
+});
+
+test("a saved job spans its combinations, and a job still going has no end yet", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "dev-pad-history-"));
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repository });
+    await mkdir(join(repository, ".github/workflows"), { recursive: true });
+    await writeFile(join(repository, ".github/workflows/deploy.yml"), "name: Deploy\n");
+    const run = join(repository, ".local/workflows/Owner/deploy/main/runs/run-1");
+    await mkdir(run, { recursive: true });
+    const at = (seconds) => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
+    const combination = (key, startedAt, finishedAt) => ({ key, log: `${key}.log`, startedAt, finishedAt });
+    const status = {
+      version: 1,
+      id: "run-1",
+      pid: process.pid,
+      workflowPath: ".github/workflows/deploy.yml",
+      branch: "main",
+      state: "running",
+      startedAt: at(0),
+      args: [".github/workflows/deploy.yml"],
+      config: { deploy: false },
+      jobs: [
+        {
+          id: "tests",
+          name: "Tests",
+          state: "success",
+          needs: [],
+          combinations: [combination("tests-1", at(5), at(30)), combination("tests-2", at(3), at(20))],
+        },
+        {
+          id: "e2e",
+          name: "E2E",
+          state: "running",
+          needs: ["tests"],
+          combinations: [combination("e2e-1", at(31), at(40)), combination("e2e-2", at(32))],
+        },
+        { id: "deploy", name: "Deploy", state: "pending", needs: ["e2e"], combinations: [combination("deploy")] },
+      ],
+    };
+    await writeFile(join(run, "status.json"), JSON.stringify(status));
+
+    const [saved] = await localWorkflowRuns(repository, { id: "deploy", file: ".github/workflows/deploy.yml" });
+    assert.deepEqual(
+      saved.jobs.map(({ id, startedAt, finishedAt }) => ({ id, startedAt, finishedAt })),
+      [
+        { id: "tests", startedAt: at(3), finishedAt: at(30) },
+        { id: "e2e", startedAt: at(31), finishedAt: undefined },
+        { id: "deploy", startedAt: undefined, finishedAt: undefined },
+      ],
+    );
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
+
+test("durations and run ages read in their largest units", () => {
+  const start = Date.UTC(2026, 0, 1);
+  assert.equal(jobDuration({ startedAt: new Date(start).toISOString() }, start + 45_000), "45s");
+  assert.equal(
+    jobDuration({ startedAt: new Date(start).toISOString(), finishedAt: new Date(start + 187_000).toISOString() }),
+    "3m 07s",
+  );
+  assert.equal(formatDuration(2 * 3600_000 + 5 * 60_000), "2h 05m");
+  assert.equal(jobDuration({}), undefined);
+  assert.equal(formatAgo(start, start + 30_000), "just now");
+  assert.equal(formatAgo(start, start + 5 * 60_000), "5m ago");
+  assert.equal(formatAgo(start, start + 3 * 86400_000), "3d ago");
 });

@@ -3,6 +3,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { jobSpan } from "./durations.js";
 import type { LocalWorkflow } from "./index.js";
 import { logStream } from "./logs.js";
 import type { WorkflowJob } from "./ui.js";
@@ -20,7 +21,11 @@ type SavedStatus = {
   startedAt: string;
   args: string[];
   config: { deploy: boolean };
-  jobs: Array<Omit<WorkflowJob, "logKeys"> & { combinations: Array<{ key: string; log: string }> }>;
+  jobs: Array<
+    Omit<WorkflowJob, "logKeys" | "startedAt" | "finishedAt"> & {
+      combinations: Array<{ key: string; log: string; startedAt?: string; finishedAt?: string }>;
+    }
+  >;
 };
 
 const git = promisify(execFile);
@@ -200,6 +205,7 @@ export async function localWorkflowRuns(cwd: string, config: LocalWorkflow, entr
           note,
           needs,
           logKeys: combinations.map(({ key }) => key),
+          ...jobSpan(combinations, !["pending", "queued", "running"].includes(state)),
         })),
         directory,
         logs: status.jobs.flatMap((job) => job.combinations),

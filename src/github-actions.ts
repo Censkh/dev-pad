@@ -23,6 +23,8 @@ type GitHubJob = {
   name: string;
   status: string;
   conclusion: string;
+  startedAt?: string;
+  completedAt?: string;
   steps: { name: string; status: string }[];
 };
 

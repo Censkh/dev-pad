@@ -6,6 +6,7 @@ import { basename, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify, stripVTControlCharacters } from "node:util";
 import { parseDocument } from "yaml";
+import { formatAgo, runStarted } from "./durations.js";
 import {
   type GitHubRun,
   type GitHubWorkflow,
@@ -627,6 +628,8 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
   let lastLocalPoll = 0;
   let displayedRunId: string | undefined;
 
+  /** A date GitHub reports, unless it is the zero date it gives a job that hasn't started or finished. */
+  const realDate = (date: string | undefined) => (date && !date.startsWith("0001-") ? date : undefined);
   /** A saved run's ID (`2026-11-15T16-08-37-887Z-<commit>`) as its start time and commit. */
   const waitingLabel = (id: string) => {
     const match = /^\d{4}-\d{2}-\d{2}T(\d{2})-(\d{2})-[\d-]+Z-(.+)$/.exec(id);
@@ -640,7 +643,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         id: `live:${s.localRunOrder}`,
         startedAt: Date.parse(liveStartedAt) || 0,
         status: s.status === "running" ? (s.workflowRun?.state ?? "running") : s.status,
-        label: `Local · ${liveStartedAt.slice(0, 16).replace("T", " ")}`,
+        label: `Local · ${runStarted(Date.parse(liveStartedAt) || 0)}`,
         options: s.localOptions,
         source: "live",
       });
@@ -652,7 +655,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         id: `local:${saved.id}`,
         startedAt: Date.parse(saved.startedAt) || 0,
         status: saved.state,
-        label: `Local · ${saved.startedAt.slice(0, 16).replace("T", " ")}${saved.partial ? ` · ${saved.partial.join(", ")}` : ""}${saved.waitingFor ? ` · waiting for ${waitingLabel(saved.waitingFor)}` : ""}`,
+        label: `Local · ${runStarted(Date.parse(saved.startedAt) || 0)}${saved.partial ? ` · ${saved.partial.join(", ")}` : ""}${saved.waitingFor ? ` · waiting for ${waitingLabel(saved.waitingFor)}` : ""}`,
         options: saved.options,
         source: "local",
         saved,
@@ -663,7 +666,7 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
         id: `github:${remote.databaseId}:${remote.attempt}`,
         startedAt: Date.parse(remote.startedAt || remote.createdAt) || 0,
         status: githubStatus(remote),
-        label: `GitHub · #${remote.number} ${remote.headBranch}`,
+        label: `GitHub · #${remote.number} ${remote.headBranch} · ${formatAgo(Date.parse(remote.startedAt || remote.createdAt) || 0)}`,
         source: "github",
         remote,
       });
@@ -764,6 +767,9 @@ export function createDashboard(config: Config, options: DashboardOptions = {}) 
                 state: githubStatus(job),
                 needs: needs.get(String(job.databaseId)) ?? [],
                 logKeys: [String(job.databaseId)],
+                // GitHub reports a job that hasn't started or finished with a zero date.
+                startedAt: realDate(job.startedAt),
+                finishedAt: job.status === "completed" ? realDate(job.completedAt) : undefined,
               })),
               stages: (jobs ?? [])
                 .filter((job) => job.status === "in_progress")

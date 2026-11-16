@@ -759,6 +759,7 @@ function writeStatusNow() {
       note: job.note,
       needs: job.needs,
       logKeys: job.combinations.map((part) => part.key),
+      ...jobSpan(job),
     }));
     const stages = live.jobs.flatMap((job) =>
       job.combinations
@@ -769,6 +770,16 @@ function writeStatusNow() {
       `::dev-pad-status::${JSON.stringify({ id: live.id, startedAt: live.startedAt, state: live.state, jobs, stages })}\n`,
     );
   }
+}
+// When a job's first combination started and, once it is done, its last one finished, for DevPad's job durations.
+function jobSpan(job: LiveJob) {
+  const starts = job.combinations.flatMap((part) => (part.startedAt ? [part.startedAt] : [])).sort();
+  if (!starts.length) return {};
+  const done =
+    !["pending", "queued", "running"].includes(job.state) &&
+    job.combinations.every((part) => !part.startedAt || part.finishedAt);
+  const ends = job.combinations.flatMap((part) => (part.finishedAt ? [part.finishedAt] : [])).sort();
+  return { startedAt: starts[0], finishedAt: done ? ends.at(-1) : undefined };
 }
 function updateStatus() {
   statusTimer ??= setTimeout(writeStatusNow, 200);
