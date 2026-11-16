@@ -22,6 +22,8 @@
 //                    stops the run: its log tail is printed at once, the other jobs' steps are
 //                    stopped and every job not finished is cancelled.
 //   --all            Ignore the last successful run (the changes job then runs everything).
+//   --fresh          Run every job, even one an earlier run already passed with the same inputs
+//                    (see "Reused results").
 //   --since <ref>    Compare with this commit instead of the last successful run, so the
 //                    changes job runs what a push of the changes since then needs
 //                    (`--since origin/main`).
@@ -44,6 +46,7 @@
 // Secrets come from the environment or the macOS Keychain service configured with --keychain-service.
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -51,12 +54,13 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { availableParallelism, homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { actionProcessor, actions, isPreservablePath } from "./actions";
+import { actionProcessor, actions, isPreservablePath, UPLOADED_BY } from "./actions";
 import {
   condition,
   type ExpressionContext,
@@ -118,6 +122,12 @@ type Loaded = {
   exclusive: string[][];
   // Untracked paths a job's checkout keeps between runs, as caches (RunInfo.preserve).
   preserve: string[];
+  // The processors module, when there is one.
+  processorsModule?: string;
+  // Jobs whose combinations start as soon as their needs allow, without waiting for the machine's
+  // load: long work on the run's critical path, such as a deploying run's build, which otherwise
+  // waits behind the tests that fill the machine although nothing it does depends on them.
+  startFirst: string[];
 };
 
 /**
@@ -166,6 +176,7 @@ async function load(
         deployJobs?: string[];
         optionalSecrets?: string[];
         preserve?: string[];
+        startFirst?: string[];
       })
     : {};
   const processors: Processors = imported.processors ?? {};
@@ -187,6 +198,8 @@ async function load(
     deployJobs: imported.deployJobs ?? [],
     optionalSecrets: new Set(imported.optionalSecrets ?? []),
     preserve: imported.preserve ?? [],
+    startFirst: imported.startFirst ?? [],
+    processorsModule: existsSync(module) ? module : undefined,
   };
 }
 
@@ -338,6 +351,8 @@ function check(loaded: Loaded, selected: Set<string>, partial = false): string[]
       if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: exclusive job '${id}' doesn't exist`);
   for (const id of loaded.deployJobs)
     if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: deploy job '${id}' doesn't exist`);
+  for (const id of loaded.startFirst)
+    if (!loaded.workflow.jobs[id]) errors.push(`${loaded.file}: start-first job '${id}' doesn't exist`);
   for (const path of loaded.preserve)
     if (!isPreservablePath(path))
       errors.push(`${loaded.file}: preserved path '${path}' isn't a plain path inside the workspace`);
@@ -347,7 +362,7 @@ function check(loaded: Loaded, selected: Set<string>, partial = false): string[]
 // --- Arguments ----------------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
-const flags = new Set(["--dry-run", "--all", "--check", "--no-fail-fast", "--stream", "--status-events"]);
+const flags = new Set(["--dry-run", "--all", "--check", "--no-fail-fast", "--stream", "--status-events", "--fresh"]);
 const repeated: Record<string, string[]> = { "--job": [], "--skip": [], "--matrix": [] };
 const single: Record<string, string | undefined> = {};
 const positional: string[] = [];
@@ -923,7 +938,13 @@ async function runCombination(
       workspace,
       cwd,
       temp,
-      run: runInfo,
+      // A step that reads the run's base makes its job's result depend on it ("Reused results").
+      run: new Proxy(runInfo, {
+        get(target, property, receiver) {
+          if (property === "lastSuccessSha") readsBase.add(id);
+          return Reflect.get(target, property, receiver);
+        },
+      }),
       signal: controller.signal,
       exec: async (command, commandArgs, options) => (await spawn(command, commandArgs ?? [], options)).code,
       output: async (command, commandArgs, options) =>
@@ -1054,6 +1075,132 @@ async function reapWorkspace(workspace: string) {
   signal(left, "SIGKILL");
 }
 
+// --- Reused results ---------------------------------------------------------------------------
+// A job an earlier run on this machine already passed with exactly the same inputs isn't run
+// again: a deploying run after a passing check run only builds and deploys. The same inputs are
+// the commit, the workflow as committed, the code that carries out its steps (the processors
+// module with the local modules it imports, and this runner, read from disk, so an uncommitted
+// edit to either counts),
+// the run's base and event, which the steps can read, the job's matrix and its needs' results and
+// outputs. Its outputs and the artifacts it uploaded come with it. Jobs that use secrets are always
+// run, a run limited by --matrix neither reuses nor records, and --fresh runs everything.
+// Each job that passes records itself as it ends (runs/<run>/reuse/<job>.json), so a run that was
+// stopped or replaced still lends the jobs it finished.
+const reuseDir = join(runDir, "reuse");
+const hashDirectory = (root: string) => {
+  const hash = createHash("sha256");
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      if (name === "node_modules" || name === "test" || name.startsWith(".")) continue;
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else hash.update(relative(root, path)).update("\0").update(readFileSync(path)).update("\0");
+    }
+  };
+  if (existsSync(root)) walk(root);
+  return hash.digest("hex");
+};
+// A module and the local modules it imports, transitively, by content.
+const hashModule = (entry: string) => {
+  const hash = createHash("sha256");
+  const seen = new Set<string>();
+  const transpiler = new Bun.Transpiler({ loader: "ts" });
+  const visit = (path: string) => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    const code = readFileSync(path, "utf8");
+    hash.update(path).update("\0").update(code).update("\0");
+    for (const { path: specifier } of transpiler.scanImports(code)) {
+      if (!specifier.startsWith(".")) continue;
+      const base = resolve(dirname(path), specifier);
+      const found = [base, `${base}.ts`, `${base}.js`, join(base, "index.ts")].find(
+        (candidate) => existsSync(candidate) && statSync(candidate).isFile(),
+      );
+      if (found) visit(found);
+    }
+  };
+  visit(entry);
+  return hash.digest("hex");
+};
+const reuseBase = createHash("sha256")
+  .update(
+    JSON.stringify([
+      sha,
+      loaded.workflow,
+      loaded.processorsModule ? hashModule(loaded.processorsModule) : null,
+      hashDirectory(import.meta.dir),
+      event,
+    ]),
+  )
+  .digest("hex");
+// `readsBase`: whether a step read the run's base, which the key then includes. Only steps that
+// do depend on it (the changes job's), so a check run against origin/main lends its tests to the
+// deploying run that compares with the last deploy, whose base is another commit.
+type ReuseRecord = { key: string; readsBase?: boolean; outputs: Record<string, string>; artifacts: string[] };
+const readsBase = new Set<string>();
+const reuseKey = (id: string, combinations: unknown, needs: unknown, withBase: boolean) =>
+  createHash("sha256")
+    .update(JSON.stringify([reuseBase, id, combinations, needs, withBase ? (lastSuccessSha ?? null) : undefined]))
+    .digest("hex");
+// The newest earlier run's record of this job with this key (with the base, when it read the
+// base) whose artifacts are all still there.
+function findReuse(id: string, key: (withBase: boolean) => string): { run: string; record: ReuseRecord } | undefined {
+  let runs: string[] = [];
+  try {
+    runs = readdirSync(join(stateDir, "runs"))
+      .filter((name) => name !== runId)
+      .sort()
+      .reverse();
+  } catch {}
+  for (const run of runs) {
+    try {
+      const record = JSON.parse(
+        readFileSync(join(stateDir, "runs", run, "reuse", `${id}.json`), "utf8"),
+      ) as ReuseRecord;
+      if (record.key !== key(record.readsBase === true)) continue;
+      if (record.artifacts.every((name) => existsSync(join(stateDir, "runs", run, "artifacts", name))))
+        return { run, record };
+    } catch {}
+  }
+  return undefined;
+}
+// The artifacts this run's job uploaded (actions.ts marks each with its job).
+const uploadedBy = (id: string) => {
+  const marks = join(artifactsDir, UPLOADED_BY);
+  if (!existsSync(marks)) return [];
+  return readdirSync(marks).filter((name) => readFileSync(join(marks, name), "utf8") === id);
+};
+function recordReuse(id: string, key: (withBase: boolean) => string, outputs: Record<string, string>, base: boolean) {
+  mkdirSync(reuseDir, { recursive: true });
+  const record: ReuseRecord = { key: key(base), readsBase: base, outputs, artifacts: uploadedBy(id) };
+  writeFileSync(join(reuseDir, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`);
+}
+// The job's combinations as the earlier run showed them, with their logs, so the reused job reads
+// as it did there.
+function restoreCombinations(fromRun: string, id: string) {
+  try {
+    const earlier = JSON.parse(readFileSync(join(stateDir, "runs", fromRun, "status.json"), "utf8")) as RunStatus;
+    for (const combination of earlier.jobs.find((job) => job.id === id)?.combinations ?? []) {
+      const log = join(stateDir, "runs", fromRun, combination.log);
+      if (existsSync(log)) {
+        cpSync(log, join(runDir, combination.log));
+        // Streamed as a running job's output is, so whatever follows the run sees it too.
+        if (single["--stream"])
+          for (const line of readFileSync(log, "utf8").split("\n"))
+            if (line) process.stdout.write(`[${combination.key}] ${line}\n`);
+      }
+      liveJob(id).combinations.push(combination);
+    }
+  } catch {}
+}
+function restoreArtifacts(fromRun: string, id: string, names: string[]) {
+  for (const name of names) {
+    cpSync(join(stateDir, "runs", fromRun, "artifacts", name), join(artifactsDir, name), { recursive: true });
+    mkdirSync(join(artifactsDir, UPLOADED_BY), { recursive: true });
+    writeFileSync(join(artifactsDir, UPLOADED_BY, name), id);
+  }
+}
+
 async function runJob(state: JobState): Promise<void> {
   const { id, job } = state;
   if (cancelled) {
@@ -1099,6 +1246,21 @@ async function runJob(state: JobState): Promise<void> {
     state.note = "no matrix combination matches --matrix";
     return;
   }
+  const reusable = !single["--fresh"] && !matrixFilters.length && !deployOnly(loaded, id, job);
+  const key = (withBase: boolean) => reuseKey(id, combinations, needs, withBase);
+  if (reusable) {
+    const earlier = findReuse(id, key);
+    if (earlier) {
+      restoreArtifacts(earlier.run, id, earlier.record.artifacts);
+      restoreCombinations(earlier.run, id);
+      Object.assign(state.outputs, earlier.record.outputs);
+      state.result = "success";
+      state.note = `reused from ${earlier.run}`;
+      recordReuse(id, key, state.outputs, earlier.record.readsBase === true);
+      say(`✔ ${job.name ?? id}: reused from ${earlier.run}`);
+      return;
+    }
+  }
   const failFast = truthy(evaluateValue(job.strategy?.["fail-fast"] ?? true, context));
   const continueOnError = truthy(evaluateValue(job["continue-on-error"] ?? false, context));
   let ok = true;
@@ -1123,6 +1285,7 @@ async function runJob(state: JobState): Promise<void> {
   );
   state.result = !ok && stoppedBy?.job === id ? "failure" : cancelled ? "cancelled" : ok ? "success" : "failure";
   if (state.result === "cancelled" && stoppedBy) state.note = `stopped: ${stoppedBy.label} failed`;
+  if (state.result === "success" && reusable) recordReuse(id, key, state.outputs, readsBase.has(id));
 }
 
 // --- Runs going at once ------------------------------------------------------------------------
@@ -1328,9 +1491,10 @@ async function withSlot(
   work: (cpus: number) => Promise<void>,
 ) {
   const exclusive = loaded.exclusive.filter((group) => group.includes(jobId));
-  // A quick combination (schedule.ts) starts at once, without waiting for --jobs or the machine's
-  // load; one in an exclusive group still waits for the group.
-  if (quick && !exclusive.length) {
+  // A quick combination (schedule.ts), or one of a start-first job (Loaded.startFirst), starts at
+  // once, without waiting for --jobs or the machine's load; one in an exclusive group still waits
+  // for the group.
+  if ((quick || loaded.startFirst.includes(jobId)) && !exclusive.length) {
     const job = liveJob(jobId);
     if (job.state === "queued") {
       job.state = "running";

@@ -2,7 +2,7 @@
 // Each accepts only the inputs it implements, so a workflow can't start relying on an input that
 // is silently ignored here. Toolchains are taken from this Mac (Homebrew, java_home, uv) or
 // downloaded from their official release with a checked SHA-256 into the tool cache.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { Processor, StepRun } from "./processor";
 import { StepFailure } from "./processor";
@@ -341,6 +341,9 @@ function commonDirectory(paths: string[]) {
   return common.join(sep) || sep;
 }
 
+/** The directory of a run's artifacts that marks which job uploaded each (by name). */
+export const UPLOADED_BY = ".uploaded-by";
+
 // actions/upload-artifact: the files under the artifact's root (the paths' common directory, or
 // a single directory itself), copied into this run's artifacts.
 const uploadArtifact: Action = {
@@ -369,6 +372,9 @@ const uploadArtifact: Action = {
       mkdirSync(dirname(target), { recursive: true });
       cpSync(file, target);
     }
+    // Which job uploaded it, so a run that reuses the job's result brings its artifacts too.
+    mkdirSync(join(step.run.artifacts, UPLOADED_BY), { recursive: true });
+    writeFileSync(join(step.run.artifacts, UPLOADED_BY, name), step.jobId);
     step.log(`Uploaded artifact ${name}`);
   },
 };

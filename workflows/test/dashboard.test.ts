@@ -195,6 +195,7 @@ export const processors = {
       await waitPassed();
       expect(await Bun.file(marker).exists()).toBe(false);
       await dashboard.key("d");
+      for (let attempt = 0; attempt < 200 && !(await Bun.file(marker).exists()); attempt++) await Bun.sleep(50);
       await waitPassed();
       expect(await Bun.file(marker).text()).toBe("published");
     } finally {

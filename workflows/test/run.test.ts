@@ -155,6 +155,7 @@ export const processors = {
 const turnsProcessors = `
 import { existsSync, writeFileSync } from "node:fs";
 export const exclusive = process.env.EXCLUSIVE ? [["slow"]] : [];
+export const startFirst = process.env.START_FIRST ? ["quick"] : [];
 export const processors = {
   async Hold(step) {
     // Which workspace this run's Hold has, by runner.
@@ -413,6 +414,8 @@ export const processors = {
           join(root, "cache.ts"),
           "--state",
           stateDir,
+          // The second run checks out again, rather than reusing the first's result.
+          "--fresh",
         ],
         { stdout: "pipe", stderr: "pipe" },
       );
@@ -454,10 +457,106 @@ async function until<T>(read: () => T | undefined, timeout = 30_000): Promise<T>
   }
 }
 
+test.skipIf(!canRun)(
+  "a job an earlier run passed with the same inputs is reused, with its outputs and artifacts",
+  () => {
+    const reuseState = join(dir, "state-reuse");
+    const markers = join(reuseState, "probe/probe/main/markers");
+    const run = (...extra: string[]) => {
+      rmSync(markers, { recursive: true, force: true });
+      mkdirSync(markers, { recursive: true });
+      Bun.spawnSync(
+        [
+          "bun",
+          runner,
+          join(repo, ".github/workflows/probe.yml"),
+          "--processors",
+          join(dir, "processors.ts"),
+          "--state",
+          reuseState,
+          "--no-fail-fast",
+          "--dry-run",
+          ...extra,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const runs = join(reuseState, "probe/probe/main/runs");
+      const latest = readdirSync(runs).sort().at(-1)!;
+      return {
+        jobs: JSON.parse(readFileSync(join(runs, latest, "results.json"), "utf8")).jobs,
+        markers: readdirSync(markers).sort(),
+      };
+    };
+    // The first job alone, which records its result.
+    // (lib- names the submodule's README, which an earlier test may have updated.)
+    expect(run("--job", "first").markers).toEqual(["base-none", expect.stringMatching(/^lib-/)]);
+    // Then everything: the first job isn't run again (no lib- or base- marker), yet the second
+    // gets its output and its artifact.
+    const reused = run();
+    expect(reused.jobs.first.result).toBe("success");
+    expect(reused.jobs.first.note).toMatch(/^reused from /);
+    expect(reused.markers).toEqual(["after-failure", "use-1-made-hello-1of2", "use-2-made-hello-2of2"]);
+    // A failed job is never reused, and --fresh runs everything again.
+    expect(reused.jobs.failing.result).toBe("failure");
+    expect(run("--fresh").markers).toEqual([
+      "after-failure",
+      "base-none",
+      expect.stringMatching(/^lib-/),
+      "use-1-made-hello-1of2",
+      "use-2-made-hello-2of2",
+    ]);
+  },
+  120_000,
+);
+
+test.skipIf(!canRun)(
+  "a job that read the run's base is reused only with the same base, and one that didn't with any",
+  () => {
+    const reuseState = join(dir, "state-reuse-base");
+    const markers = join(reuseState, "probe/probe/main/markers");
+    const run = (...extra: string[]) => {
+      rmSync(markers, { recursive: true, force: true });
+      mkdirSync(markers, { recursive: true });
+      Bun.spawnSync(
+        [
+          "bun",
+          runner,
+          join(repo, ".github/workflows/probe.yml"),
+          "--processors",
+          join(dir, "processors.ts"),
+          "--state",
+          reuseState,
+          "--no-fail-fast",
+          "--dry-run",
+          ...extra,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      return readdirSync(markers).sort();
+    };
+    run();
+    // The first job's Make reads the base (its base- marker): against another base it runs again,
+    // while the second job, which doesn't, has the same needs and is reused.
+    const markersSince = run("--since", "HEAD");
+    expect(markersSince.filter((name) => name.startsWith("base-"))).toEqual([
+      expect.stringMatching(/^base-[0-9a-f]{7}$/),
+    ]);
+    expect(markersSince.filter((name) => name.startsWith("use-"))).toEqual([]);
+  },
+  120_000,
+);
+
 describe.skipIf(!canRun)("runs going at once", () => {
   // busy: the machine's CPUs always count as busier than the limit, so only a run's first
   // combination starts while another of its own runs.
-  const start = (stateDir: string, release: string, extra: string[] = [], exclusive = false, busy = false) =>
+  const start = (
+    stateDir: string,
+    release: string,
+    extra: string[] = [],
+    exclusive = false,
+    busy = false,
+    startFirst = false,
+  ) =>
     Bun.spawn(
       [
         "bun",
@@ -480,6 +579,7 @@ describe.skipIf(!canRun)("runs going at once", () => {
           RELEASE: release,
           EXCLUSIVE: exclusive ? "1" : "",
           ...(busy ? { DEVPAD_MAX_CPU_BUSY: "0" } : {}),
+          START_FIRST: startFirst ? "1" : "",
         },
       },
     );
@@ -618,6 +718,24 @@ describe.skipIf(!canRun)("runs going at once", () => {
           state(status, "slow") === "running" &&
           state(status, "quick") !== "queued" &&
           state(status, "quick") !== "running",
+      ),
+    );
+    expect(state(holding, "quick")).toBe("success");
+    writeFileSync(release, "");
+    expect(await run.exited).toBe(0);
+  }, 60_000);
+
+  test("a start-first job starts without waiting for the machine's load, though never timed", async () => {
+    const release = join(dir, "release-start-first");
+    const stateDir = join(dir, "turns-start-first");
+    // The slow job holds and the CPUs count as busy: without startFirst the quick job would queue
+    // behind it (the test above), but it runs and finishes while the slow job still holds.
+    const run = start(stateDir, release, ["--dry-run"], false, true, true);
+    type Jobs = { jobs?: { id: string; state: string }[] };
+    const state = (status: Jobs, id: string) => status.jobs?.find((job) => job.id === id)?.state;
+    const holding = await until(() =>
+      (statuses(stateDir) as unknown as Jobs[]).find(
+        (status) => state(status, "slow") === "running" && state(status, "quick") === "success",
       ),
     );
     expect(state(holding, "quick")).toBe("success");
